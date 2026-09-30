@@ -1,0 +1,6 @@
+# 仅供开发使用，不进 Registry 发布归档。
+# 语法同 .gitignore；未被 git 跟踪的文件本来就会排除，这里只过滤「留在 git 里但不想发布」的。
+# 注意：docs/images/*.svg 不能排除 —— README 里内嵌引用了它们。
+
+tests/
+.github/
