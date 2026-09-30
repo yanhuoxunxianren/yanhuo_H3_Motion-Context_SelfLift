@@ -1,14 +1,18 @@
 [project]
 name = "yanhuo-h3-motion-context-selflift"
-description = "把 MiniMax H3 Extender 的 Motion Context 续接能力与 SelfLift 双分辨率采样合成一个节点：低分辨率 Euler 前缀 → 干净端点预测 → 伪影感知一致性提升 → 高分辨率 Euler 后缀。以只读方式桥接两个姊妹包，不修改它们。"
+description = "把 MiniMax H3 Extender 的 Motion Context 续接能力与 SelfLift 双分辨率采样合成一个 ComfyUI 节点：低分辨率 Euler 前缀 → 干净端点预测 → 伪影感知一致性提升 → 高分辨率 Euler 后缀，段间完整保留 Motion Context 的时间连续性。以只读方式桥接两个姊妹包，不修改它们。附带中文界面、草稿/逐段成片实时预览、可选语义桥、外接 SIGMAS，以及参考图打包与成片导出配套节点。"
 version = "1.8.1"
 license = { file = "LICENSE" }
 dependencies = []
 
+[project.urls]
+Repository = "https://github.com/yanhuoxunxianren/yanhuo_H3_Motion-Context_SelfLift"
+Issues = "https://github.com/yanhuoxunxianren/yanhuo_H3_Motion-Context_SelfLift/issues"
+
 [tool.comfy]
-# ComfyUI Registry 收录用。仓库设为私有时不会被 Registry 收录；
-# 将来转为公开并发布到 https://registry.comfy.org 前，
-# 把 PublisherId 换成你在 Registry 后台创建的 Publisher ID。
+# ComfyUI Registry 收录用。仓库需为公开才会被 Registry 收录；
+# 发布到 https://registry.comfy.org 前，把 PublisherId 换成你在 Registry
+# 后台创建的 Publisher ID。
 PublisherId = "yanhuo"
 DisplayName = "yanhuo_H3_Motion-Context_SelfLift"
 Icon = ""
