@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="810" viewBox="0 0 900 810">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b80"/></marker></defs>
+<rect x="0" y="0" width="900" height="810" fill="#ffffff"/>
+<text x="24" y="30" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" font-weight="700" fill="#2b2b38">② 单段 CLIP 的双分辨率采样管线</text>
+<line x1="24" y1="40" x2="876" y2="40" stroke="#b8a1e8" stroke-width="1"/>
+<rect x="768" y="16" width="12" height="12" rx="3" fill="#ececed" stroke="#9a9aa8"/>
+<text x="784" y="26" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">可选</text>
+<rect x="650" y="16" width="12" height="12" rx="3" fill="#fff2e2" stroke="#e0a860"/>
+<text x="666" y="26" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">修正/加噪</text>
+<rect x="532" y="16" width="12" height="12" rx="3" fill="#f3eefc" stroke="#b8a1e8"/>
+<text x="548" y="26" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">采样阶段</text>
+<rect x="240" y="62" width="300" height="54" rx="9" ry="9" fill="#ececed" stroke="#9a9aa8" stroke-width="1.4"/>
+<text x="390.0" y="89.8" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">当前 CLIP 的 latent + 完整 sigma 表</text>
+<rect x="240" y="146" width="300" height="76" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="390.0" y="168.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">低分辨率阶段</text>
+<text x="390.0" y="186.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">transition_step 步 Euler</text>
+<text x="390.0" y="204.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">空间缩放到 lowres_scale</text>
+<rect x="240" y="252" width="300" height="58" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="390.0" y="281.8" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">预测干净端点 x0</text>
+<rect x="50" y="340" width="300" height="62" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="200.0" y="363.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">① 直接 latent 提升</text>
+<text x="200.0" y="381.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">nearest / bilinear / 学习型 3D upscaler</text>
+<rect x="430" y="340" width="300" height="62" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="580.0" y="363.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">② 像素路径</text>
+<text x="580.0" y="381.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">VAE 解码 → 放大 → 重编码</text>
+<rect x="240" y="430" width="300" height="80" rx="9" ry="9" fill="#fff2e2" stroke="#e0a860" stroke-width="1.4"/>
+<text x="390.0" y="454.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">伪影感知一致性修正</text>
+<text x="390.0" y="472.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">用两路残差定位风险位置</text>
+<text x="390.0" y="490.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">rho / w_min / w_max 控制强度</text>
+<rect x="240" y="540" width="300" height="76" rx="9" ry="9" fill="#fff2e2" stroke="#e0a860" stroke-width="1.4"/>
+<text x="390.0" y="570.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">在过渡 sigma 处重新加噪</text>
+<text x="390.0" y="588.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">沿用表上原有的那一步，NFE 不增加</text>
+<rect x="240" y="646" width="300" height="66" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="390.0" y="671.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">高分辨率阶段</text>
+<text x="390.0" y="689.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">剩余 Euler 步，回到完整 latent 网格</text>
+<rect x="240" y="742" width="300" height="54" rx="9" ry="9" fill="#e8f5ec" stroke="#79b58c" stroke-width="1.4"/>
+<text x="390.0" y="769.8" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">本段 CLIP 的 latent（回到链路）</text>
+<rect x="580" y="646" width="180" height="66" rx="9" ry="9" fill="#ececed" stroke="#9a9aa8" stroke-width="1.4"/>
+<text x="670.0" y="671.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">可选：分块 tiling</text>
+<text x="670.0" y="689.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">1~8 块，显存吃紧</text>
+<path d="M 390.0 116.0 L 390.0 146.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 390.0 222.0 L 390.0 252.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 390.0 310.0 L 200.0 340.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="370.8" y="314.0" width="54.4" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="398.0" y="326.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">提升（双路并行）</text>
+<path d="M 390.0 310.0 L 580.0 340.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 200.0 402.0 L 390.0 430.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 580.0 402.0 L 390.0 430.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 390.0 510.0 L 390.0 540.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="387.8" y="514.0" width="20.4" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="398.0" y="526.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">修正量</text>
+<path d="M 390.0 616.0 L 390.0 646.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 390.0 712.0 L 390.0 742.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="384.4" y="716.0" width="27.2" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="398.0" y="728.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">本段完成</text>
+<path d="M 540.0 679.0 L 580.0 679.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="553.2" y="660.0" width="13.6" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="560.0" y="672.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">可选</text>
+<text x="560" y="90" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12.5" fill="#2b2b38">Motion Context 全程不变</text>
+<text x="560" y="112" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">· conditioning 仍带 minimax_keyframes</text>
+<text x="560" y="130" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">· 仍带 minimax_refs（参考集）</text>
+<text x="560" y="148" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">· latent 仍是 nested AV latent</text>
+<text x="560" y="166" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">· 音频仍走复用 Euler 边界步</text>
+<text x="560" y="194" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#61617a">→ 时间连续性完整保留</text>
+<text x="560" y="226" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">关闭 selflift_enabled 时</text>
+<text x="560" y="244" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">整条管线被跳过，等同原</text>
+<text x="560" y="262" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">Extender 单阶段采样。</text>
+</svg>

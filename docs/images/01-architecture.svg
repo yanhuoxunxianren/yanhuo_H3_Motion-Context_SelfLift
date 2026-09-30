@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="470" viewBox="0 0 900 470">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b80"/></marker></defs>
+<rect x="0" y="0" width="900" height="470" fill="#ffffff"/>
+<text x="24" y="30" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" font-weight="700" fill="#2b2b38">① 架构与依赖边界</text>
+<line x1="24" y1="40" x2="876" y2="40" stroke="#b8a1e8" stroke-width="1"/>
+<rect x="768" y="16" width="12" height="12" rx="3" fill="#ececed" stroke="#9a9aa8"/>
+<text x="784" y="26" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">框架</text>
+<rect x="650" y="16" width="12" height="12" rx="3" fill="#eef2f7" stroke="#8fa3bf"/>
+<text x="666" y="26" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">姊妹包（外部）</text>
+<rect x="532" y="16" width="12" height="12" rx="3" fill="#f3eefc" stroke="#b8a1e8"/>
+<text x="548" y="26" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">本包</text>
+<rect x="60" y="146" width="430" height="272" rx="12" fill="none" stroke="#b8a1e8" stroke-width="1.6"/><text x="76" y="172" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12.5" font-weight="700" fill="#b8a1e8">yanhuo_H3_Motion-Context_SelfLift（本包 · MIT）</text>
+<rect x="330" y="62" width="240" height="44" rx="9" ry="9" fill="#ececed" stroke="#9a9aa8" stroke-width="1.4"/>
+<text x="450.0" y="84.8" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">ComfyUI 运行时</text>
+<rect x="90" y="200" width="370" height="56" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="275.0" y="220.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">YanhuoH3MotionContextSelfLift</text>
+<text x="275.0" y="238.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">主节点 · 面板显示「Yanhuo H3 Motion Context SelfLift」</text>
+<rect x="90" y="264" width="370" height="62" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="275.0" y="287.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">配套节点 ×3</text>
+<text x="275.0" y="305.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">参考图打包 / 成片导出 (Final Decode) / 视频文件加载</text>
+<rect x="90" y="342" width="370" height="56" rx="9" ry="9" fill="#f3eefc" stroke="#b8a1e8" stroke-width="1.4"/>
+<text x="275.0" y="362.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38">vendor.py · 只读定位</text>
+<text x="275.0" y="380.5" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">共享同一份 module 实例，不复制源码、不写回</text>
+<rect x="560" y="186" width="290" height="96" rx="9" ry="9" fill="#eef2f7" stroke="#8fa3bf" stroke-width="1.4"/>
+<text x="705.0" y="218.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">ComfyUI_MiniMax_H3_Extender</text>
+<text x="705.0" y="236.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">CLIP 卡片 UI / 参考图管理</text>
+<text x="705.0" y="254.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">Motion Context 缓存 · Apache-2.0</text>
+<rect x="560" y="306" width="290" height="96" rx="9" ry="9" fill="#eef2f7" stroke="#8fa3bf" stroke-width="1.4"/>
+<text x="705.0" y="338.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13.0" fill="#2b2b38" font-weight="600">comfyui-SelfLift</text>
+<text x="705.0" y="356.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">progressive_sample 双采样引擎</text>
+<text x="705.0" y="374.2" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">上游未提供 LICENSE</text>
+<path d="M 450.0 106.0 L 275.0 200.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="325.4" y="142.0" width="265.2" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="458.0" y="154.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">registerExtension + NODE_CLASS_MAPPINGS</text>
+<path d="M 460.0 370.0 H 510.0 V 234.0 H 560.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="476.0" y="215.0" width="68.0" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="510.0" y="227.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">import（只读）</text>
+<path d="M 460.0 370.0 H 510.0 V 354.0 H 560.0" fill="none" stroke="#6b6b80" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="476.0" y="335.0" width="68.0" height="16" rx="4" fill="#ffffff" fill-opacity="0.92"/>
+<text x="510.0" y="347.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#61617a">import（只读）</text>
+<text x="60" y="434" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">两个姊妹包必须都装在 custom_nodes/ 下；缺任一个 → 打日志并跳过节点注册，ComfyUI 照常启动。</text>
+<text x="60" y="452" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#61617a">本包不修改、不内置、不随包分发这两个包；它们各自的许可由你自己安装时承担。</text>
+</svg>

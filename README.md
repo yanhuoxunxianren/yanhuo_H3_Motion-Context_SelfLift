@@ -54,21 +54,22 @@ git clone https://github.com/yanhuoxunxianren/yanhuo_H3_Motion-Context_SelfLift.
 
 ## 它做了什么
 
-每一段 CLIP（续接卡）不再是「一次性全分辨率采样」，而是：
+每一段 CLIP（续接卡）不再是「一次性全分辨率采样」，而是走下面这条双分辨率管线：
 
-```
-低分辨率阶段  (transition_step 步 Euler，空间缩小到 lowres_scale)
-      ↓  预测干净端点 x0
-一致提升      双路：直接 latent 提升 (nearest / bilinear / 学习型 3D upscaler)
-              vs 像素 VAE 解码→放大→重编码
-      ↓  用两路残差做「伪影感知一致性修正」(rho, w_min, w_max)，只修最高风险位置
-      ↓  在过渡 sigma 处重新加噪（不额外增加 NFE）
-高分辨率阶段  (剩余 Euler 步，回到完整 latent 网格；可选空间分块 tiling)
-```
+<img src="docs/images/02-sampling-pipeline.svg" width="700" alt="单段 CLIP 的双分辨率采样管线">
 
 **没有变的**：conditioning 里依然带 `minimax_keyframes`（前置尾帧锚点）和 `minimax_refs`，
 latent 依然是 Extender 的 nested AV latent，音频流依然走复用 Euler 边界步 ——
 **Motion Context 的时间连续性完整保留**。
+
+### 架构与依赖边界
+
+本包**只 import，不修改、不内置、不随包分发**这两个姊妹包：
+
+<img src="docs/images/01-architecture.svg" width="700" alt="架构与依赖边界">
+
+> 完整 6 张原理图（架构边界 / 采样管线 / 工作流接线 / 外接 SIGMAS 链 / 缓存决策 / 连跑循环）
+> 见 [`docs/diagrams.md`](docs/diagrams.md)，同时提供 Mermaid 源码与 SVG 图片。
 
 ---
 
@@ -79,6 +80,8 @@ latent 依然是 Extender 的 nested AV latent，音频流依然走复用 Euler 
 ```
 [Checkpoint 加载器] ──model/clip/vae──> Yanhuo H3 Motion Context SelfLift ──cache──> Yanhuo 成片导出 (Final Decode) ──> SaveVideo
 ```
+
+<img src="docs/images/03-workflow-wiring.svg" width="700" alt="ComfyUI 工作流接线">
 
 1. 在主节点上填好 CLIP 1 的提示词、时长、参考图（需要多张参考图时，先用「参考图打包」节点）。
 2. 用「+ 添加片段」加 CLIP 2、3……，每段勾「已校验」后 Queue 才会续接下一段。
@@ -156,6 +159,8 @@ rho=0.0     upscaler_model=<你的 h3 upscaler>   upscaler_unload=true
 ```
 [基本调度器] SIGMAS → [插值扩展Sigmas] → [H3 Sigma Refiner] → selflift_sigmas
 ```
+
+<img src="docs/images/04-external-sigmas.svg" width="700" alt="外接 SIGMAS 调度链">
 
 接管后的行为与约束：
 
@@ -252,6 +257,8 @@ hybrid = h + alpha * (p - h)            # alpha 推荐 0.10~0.15
 
 ## 连跑全部与中断续跑
 
+<img src="docs/images/06-fullbatch-loop.svg" width="700" alt="连跑全部与中断续跑循环">
+
 工具栏「载入项目」后面有 **「🔗 连跑全部：开/关」**，一键切换上游自带的 `run_mode` 控件
 （`clip_by_clip` / `full_batch`）；旁边常驻 **「⏹ 停在当前段」**，直接调上游
 `requestFullBatchInterrupt()`（上游的 `Interrupt` 按钮只在运行期间才出现，所以补一个常驻的）。
@@ -345,6 +352,8 @@ hybrid = h + alpha * (p - h)            # alpha 推荐 0.10~0.15
 
 ## 缓存一致性
 
+<img src="docs/images/05-cache-signature.svg" width="700" alt="缓存一致性：什么时候会重渲">
+
 采样器的变化对 Extender 的缓存逻辑是**不可见**的。因此本包把 SelfLift 的完整参数序列化进
 manifest 的 `selflift_plan_signature` 字段（Extender 重写 manifest 时会保留未知键）：
 
@@ -425,6 +434,9 @@ yanhuo_H3_Motion-Context_SelfLift/
 ├─ tools/
 │  ├─ build_frontend.py     生成 web/selflift_extender.js（高度压缩 + 中文 + 皮肤）
 │  └─ diagnose_chain.py     链路状态自查（只读）
+├─ docs/
+│  ├─ diagrams.md           6 张工作原理图（Mermaid 源码 + SVG 索引）
+│  └─ images/               *.svg 原理图 + build_svg.py / check_svg.py
 ├─ web/selflift_extender.js （生成物）原 Extender UI + 后处理，见 THIRD_PARTY_NOTICES.md
 └─ tests/                   9 个文件 / 158 项
 ```
