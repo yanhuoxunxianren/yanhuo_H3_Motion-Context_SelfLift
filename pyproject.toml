@@ -10,9 +10,8 @@ Repository = "https://github.com/yanhuoxunxianren/yanhuo_H3_Motion-Context_SelfL
 Issues = "https://github.com/yanhuoxunxianren/yanhuo_H3_Motion-Context_SelfLift/issues"
 
 [tool.comfy]
-# ComfyUI Registry 收录用。仓库需为公开才会被 Registry 收录；
-# 发布到 https://registry.comfy.org 前，把 PublisherId 换成你在 Registry
-# 后台创建的 Publisher ID。
-PublisherId = "yanhuo"
+# ComfyUI Registry 收录用。Publisher ID 见 https://registry.comfy.org 个人资料页 @ 后面，
+# 全球唯一且不可修改。
+PublisherId = "yanhuoxunxianren"
 DisplayName = "yanhuo_H3_Motion-Context_SelfLift"
 Icon = ""
