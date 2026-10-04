@@ -27,7 +27,12 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT.parent / "ComfyUI_MiniMax_H3_Extender" / "web" / "extender.js"
+# v1.9.0：上游 Extender 包可能已经被删除（本包已内置其源码），所以构建源
+# 也要能回退到内置副本，否则以后改前端就再也构建不了了。外面的优先——
+# 装回来时能直接基于上游最新版重建。
+_EXTERNAL_SOURCE = ROOT.parent / "ComfyUI_MiniMax_H3_Extender" / "web" / "extender.js"
+_BUNDLED_SOURCE = ROOT / "_vendor" / "ComfyUI_MiniMax_H3_Extender" / "web" / "extender.js"
+SOURCE = _EXTERNAL_SOURCE if _EXTERNAL_SOURCE.is_file() else _BUNDLED_SOURCE
 TARGET_FILE = ROOT / "web" / "selflift_extender.js"
 
 NODE_NAME = "YanhuoH3MotionContextSelfLift"
@@ -130,7 +135,16 @@ HEIGHT_REWRITES = (
             "                    - yanhuoStripExtra(runtime.state) - yanhuoPreviewRowExtra())}px`;\n"
             "                const __yanhuoTargetH = Number(runtime.domWidget?.last_y)\n"
             "                    + __yanhuoNeed + BOTTOM_PAD;\n"
-            "                if (Number(node.size?.[1] || 0) < __yanhuoTargetH) {\n"
+            "                const __yanhuoBeforeH = Number(node.size?.[1] || 0);\n"
+            "                if (__yanhuoBeforeH < __yanhuoTargetH) {\n"
+            "                    /* v1.12.1：预览行导致的长高要记账（__yanhuoLoanPx），\n"
+            "                       预览收起后由 yanhuoFitPanel 还回去；非预览原因\n"
+            "                       （工具栏换行、LoRA 行数变多）的长高不算账。 */\n"
+            "                    const __yanhuoPrevExtra = yanhuoPreviewRowExtra();\n"
+            "                    if (__yanhuoPrevExtra > 0) {\n"
+            "                        runtime.__yanhuoLoanPx = Number(runtime.__yanhuoLoanPx || 0)\n"
+            "                            + Math.min(__yanhuoTargetH - __yanhuoBeforeH, __yanhuoPrevExtra);\n"
+            "                    }\n"
             "                    node.setSize([\n"
             "                        Math.max(NODE_MIN_WIDTH, Number(node.size?.[0] || NODE_MIN_WIDTH)),\n"
             "                        __yanhuoTargetH,\n"
@@ -260,6 +274,39 @@ CHINESE_REWRITES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# v1.12.1：主节点上的"旧逐段插座清理"钩子。
+#
+# v1.12.0 把 ref_pack_N / prompt_N / duration_N / ref_audio_N_k 搬到集合节点后，
+# INPUT_TYPES 里已经没有它们了；但 LiteGraph 是从**保存的 JSON** 里恢复
+# inputs 的，所以老工作流一打开，主节点上那一长排空插座照样在。它们会把
+# 透传层挡死（详细理由见 PERCLIP_UI_TAIL 里 findInputEntry 的注释）。
+#
+# 这里往两个生命周期点插一句清理：
+#   * onNodeCreated —— 新建的节点（拖出来的）；
+#   * onConfigure   —— 载入工作流的节点（插座正是这时候被恢复出来的）。
+# 只删没接线的，接了线的留给用户（那种情况由 findInputEntry 的"有线优先"接管）。
+# ---------------------------------------------------------------------------
+PERCLIP_REWRITES = (
+    (
+        "            const runtime = buildUi(this);\n"
+        "            removeLegacyImageRefInputs(this);\n",
+        "            yanhuoPruneLegacyPerClipInputs(this);\n"
+        "            const runtime = buildUi(this);\n"
+        "            removeLegacyImageRefInputs(this);\n",
+        1,
+    ),
+    (
+        "    const oldConfigure = node.onConfigure;\n"
+        "    node.onConfigure = function (info) {\n",
+        "    const oldConfigure = node.onConfigure;\n"
+        "    node.onConfigure = function (info) {\n"
+        "        yanhuoPruneLegacyPerClipInputs(this);\n",
+        1,
+    ),
+)
+
+
 def _apply_rewrites(text, rewrites, label):
     for old, new, expected in rewrites:
         count = text.count(old)
@@ -276,7 +323,8 @@ def _apply_rewrites(text, rewrites, label):
 
 
 def _compact_ui(text: str) -> str:
-    return _apply_rewrites(text, HEIGHT_REWRITES, "height")
+    text = _apply_rewrites(text, HEIGHT_REWRITES, "height")
+    return _apply_rewrites(text, PERCLIP_REWRITES, "per-clip cleanup")
 
 
 def _translate_ui(text: str) -> str:
@@ -526,21 +574,69 @@ function yanhuoFitPanel(node, runtime, pass) {
     }
     if (!(contentBottom > 0)) return;
 
+    /* v1.12.1：面板高度只认两条规则 ——
+     *   1) 静止（没有预览行）时，高度就是用户选定的尺寸：内容放不下由 cards
+     *      行自己的滚动条消化，面板**绝不**自动长高。旧版在这里按 gap 无界
+     *      补高，而且只增不减：采样期间每次 render 都把 gap 记进预算，跑完
+     *      一个 CLIP 节点就被顶高一大截，直到把提示词全文完整亮出来。
+     *   2) 只有预览行（草稿/成片）需要占位时才允许长高，且上限 =
+     *      用户选定高度 + 预览行实高 + 余量；预览行收起后把借的高度还回去。
+     *      没有这条，预览把节点撑高之后永远缩不回去。 */
     const gap = Math.round(contentBottom - availBottom);
+    const previewExtra = yanhuoPreviewRowExtra();
+    const curH = Number(node.size?.[1] || 0);
+
     if (gap <= 2) {
-        runtime.__yanhuoFitPx = 0;  // 已贴合，预算复位供下次变化使用
+        runtime.__yanhuoFitPx = 0;
+        if (previewExtra === 0) {
+            const loan = Number(runtime.__yanhuoLoanPx || 0);
+            const rest = Number(runtime.__yanhuoRestH || 0);
+            if (loan > 0 && curH > loan) {
+                /* 预览行收起了：把之前为预览借的高度还回去（用户手动拉大的
+                   部分不在 loan 里，不受影响）。 */
+                const targetH = Math.round(curH - loan);
+                const rootH =
+                    Math.round(parseFloat(root.style.height) || root.clientHeight) - loan;
+                runtime.__yanhuoLoanPx = 0;
+                runtime.__yanhuoRestH = targetH;
+                root.style.height = `${Math.max(120, rootH)}px`;
+                node.setSize([
+                    Math.max(NODE_MIN_WIDTH, Number(node.size?.[0] || NODE_MIN_WIDTH)),
+                    targetH,
+                ]);
+                node.graph?.setDirtyCanvas(true, true);
+                if (pass + 1 < YANHUO_FIT_MAX_PASS) {
+                    requestAnimationFrame(() => yanhuoFitPanel(node, runtime, pass + 1));
+                }
+                return;
+            }
+            runtime.__yanhuoLoanPx = 0;
+            runtime.__yanhuoRestH = curH;
+        }
         return;
     }
-    if (gap > YANHUO_FIT_MAX_STEP) return;  // 异常值防御：宁可不动也不追
-    const total = Number(runtime.__yanhuoFitPx || 0) + gap;
-    if (total > YANHUO_FIT_MAX_PX) return;
-    runtime.__yanhuoFitPx = total;
 
-    const rootH = Math.round(parseFloat(root.style.height) || root.clientHeight) + gap;
+    if (previewExtra === 0) {
+        /* 静止状态内容放不下：不动面板，只把"用户选定高度"的记录往下修
+           （用户手动缩小节点时 rest 要跟着变小，否则预览收起后会弹回去）。 */
+        if (!(Number(runtime.__yanhuoRestH || 0) > curH)) runtime.__yanhuoRestH = curH;
+        runtime.__yanhuoLoanPx = 0;
+        return;
+    }
+
+    const rest = Number(runtime.__yanhuoRestH || 0);
+    if (!(rest > 0)) return;  // 还没采到用户的基准尺寸，先不动
+    const allowance = rest + previewExtra + 16 - curH;
+    if (allowance <= 2) return;
+    const grow = Math.min(gap, allowance);
+    runtime.__yanhuoFitPx = Number(runtime.__yanhuoFitPx || 0) + grow;
+    runtime.__yanhuoLoanPx = Number(runtime.__yanhuoLoanPx || 0) + grow;
+
+    const rootH = Math.round(parseFloat(root.style.height) || root.clientHeight) + grow;
     root.style.height = `${rootH}px`;
     node.setSize([
         Math.max(NODE_MIN_WIDTH, Number(node.size?.[0] || NODE_MIN_WIDTH)),
-        Number(node.size?.[1] || 0) + gap,
+        Number(node.size?.[1] || 0) + grow,
     ]);
     node.graph?.setDirtyCanvas(true, true);
     if (pass + 1 < YANHUO_FIT_MAX_PASS) {
@@ -1032,7 +1128,16 @@ function normalizeYanhuoGlobal(value) {
     const lora = v.global_lora && typeof v.global_lora === "object" ? v.global_lora : {};
     const seed = v.global_seed && typeof v.global_seed === "object" ? v.global_seed : {};
     const clampStrength = (n) => Math.max(-100, Math.min(100, Number(n)));
+    /* v1.11.0：prompt_edit = { 片段 id: true } —— 该卡片的提示词框处于"编辑"态。
+       只读态（默认）由 prompt_N 端口驱动；编辑态允许改，且运行时不被端口覆盖。 */
+    const editRaw = v.prompt_edit && typeof v.prompt_edit === "object" ? v.prompt_edit : {};
+    const promptEdit = {};
+    for (const key of Object.keys(editRaw)) {
+        const id = String(key || "").trim();
+        if (id && editRaw[key]) promptEdit[id] = true;
+    }
     return {
+        prompt_edit: promptEdit,
         global_lora: {
             enabled: Boolean(lora.enabled),
             loras: Array.isArray(lora.loras)
@@ -1175,6 +1280,9 @@ mergeActiveStateJson = function (runtime, raw, explicitMode) {
 function yanhuoScanCards(node, runtime) {
     const cards = runtime?.cards;
     if (!cards) return;
+    /* v1.12.1：connectedExternalPromptValue 只认 node.__h3Extender（上游就是这么
+       取的）。万一挂载时机落后于首次扫描，编辑态那段保护会整个失效，这里补挂。 */
+    if (node && !node.__h3Extender) node.__h3Extender = runtime;
     const g = yanhuoGlobalOf(runtime);
     if (!g) return;
     Array.from(cards.children).forEach((card) => {
@@ -1274,7 +1382,245 @@ function yanhuoScanCards(node, runtime) {
             loraGroup.style.opacity = g.global_lora.enabled ? "0.45" : "1";
             loraGroup.style.pointerEvents = g.global_lora.enabled ? "none" : "";
         }
+        /* v1.11.0：提示词端口的「刷新」+「只读 / 编辑」两个按钮。 */
+        yanhuoEnhancePromptBox(node, runtime, cards, card);
     });
+}
+
+/* ------------------------------------------------------------------
+ * v1.11.0：条件卡提示词（prompt）的「刷新」与「只读 / 编辑」
+ *
+ * 上游对 prompt_N 端口是"完全接管"：建卡片时灌值 + readOnly，之后每 500ms
+ * 的镜像轮询把框和 clip.prompt 同步成端口文本，排队时后端再整体覆盖一次。
+ * 这里加两个开关：
+ *   刷新     —— 立刻把端口当前的提示词重新导入本框（不排队、不采样）。
+ *   只读/编辑 —— 只读 = 上游默认行为；编辑 = 本框可改，改动写回 clip.prompt，
+ *                且运行时**不会**被端口覆盖，只有点刷新 / 切回只读 / 新建
+ *                项目才重新整体导入。
+ *
+ * 实现要点（改的是"取值入口"而不是复制上游逻辑）：
+ *   把 connectedExternalPromptValue 包一层 —— 编辑态的卡片返回 null。上游的
+ *   镜像循环遇到 null 就 continue（既不改框也不改 clip.prompt），建卡片时
+ *   也会回落到 clip.prompt，正好显示已编辑的文本。刷新按钮要拿端口真值，
+ *   所以直接调未包装的原函数。第三道（排队覆盖）由本包 node.py 拦：读
+ *   yanhuo_global.prompt_edit 后从 payload 里摘掉对应的 prompt_N。
+ * ------------------------------------------------------------------ */
+const __yanhuoOrigConnectedPromptValue = connectedExternalPromptValue;
+
+function yanhuoPromptEditMap(runtime) {
+    const g = runtime?.state?.yanhuo_global;
+    return g && g.prompt_edit && typeof g.prompt_edit === "object" ? g.prompt_edit : null;
+}
+
+/* 片段的两把钥匙：片段 id 与「clip_<序号>」。
+   id 可能为空（后端归一化后靠位置补），所以两个都记，取的时候也两个都认。 */
+function yanhuoPromptEditKeys(clip, index) {
+    const keys = [];
+    const id = String(clip?.id ?? "").trim();
+    if (id) keys.push(id);
+    if (Number.isInteger(index) && index >= 0) keys.push("clip_" + (index + 1));
+    return keys;
+}
+
+/* v1.12.1：标记**双写**——
+   * runtime.__yanhuoPromptEdit 直接挂在 runtime（= node.__h3Extender）上。
+     runtime 本身是稳定的，而 runtime.state 会被 parseState / mergeActiveStateJson
+     整个换掉；后端 onExecuted 返回的 clips_json 是 _state_json() 重建的，只有
+     {version, clips}，yanhuo_global 不在里面 —— 标记只挂 state 上就会在
+     「运行结束」这一刻丢失，卡片随即被 prompt_N 端口的文本冲掉。
+   * yanhuo_global.prompt_edit 仍然写，用于随工作流持久化（后端 node.py 只读它）。
+   读取时取并集，任何一处为真就是编辑态。 */
+function yanhuoPromptEditable(runtime, clip, index) {
+    const keys = yanhuoPromptEditKeys(clip, index);
+    if (!keys.length) return false;
+    const hard = runtime?.__yanhuoPromptEdit;
+    if (hard && typeof hard === "object") {
+        for (const key of keys) if (hard[key]) return true;
+    }
+    const map = yanhuoPromptEditMap(runtime);
+    if (map) {
+        for (const key of keys) if (map[key]) return true;
+    }
+    return false;
+}
+
+function yanhuoSetPromptEditable(runtime, clip, editable, index) {
+    if (!runtime) return;
+    const keys = yanhuoPromptEditKeys(clip, index);
+    if (!keys.length) return;
+    if (!runtime.__yanhuoPromptEdit || typeof runtime.__yanhuoPromptEdit !== "object") {
+        runtime.__yanhuoPromptEdit = {};
+    }
+    const g = runtime?.state?.yanhuo_global;
+    if (g && (!g.prompt_edit || typeof g.prompt_edit !== "object")) g.prompt_edit = {};
+    for (const key of keys) {
+        if (editable) {
+            runtime.__yanhuoPromptEdit[key] = true;
+            if (g) g.prompt_edit[key] = true;
+        } else {
+            delete runtime.__yanhuoPromptEdit[key];
+            if (g) delete g.prompt_edit[key];
+        }
+    }
+}
+
+/* 编辑态返回 null —— 这是绕开上游 500ms 镜像与建卡灌值的唯一开关。
+   v1.12.0：取值改走 yanhuoExternalPromptValue —— 逐段端口可能住在集合节点上，
+   拿主节点的槽位号去解析连线会解析到别的端口上（见 PERCLIP_UI_TAIL）。 */
+connectedExternalPromptValue = function (node, clipIndex) {
+    const rt = node?.__h3Extender;
+    const idx = Number(clipIndex) - 1;
+    const clip = rt?.state?.clips?.[idx];
+    if (yanhuoPromptEditable(rt, clip, idx)) return null;
+    return yanhuoExternalPromptValue(node, clipIndex);
+};
+
+function yanhuoFindPromptBox(card) {
+    return card.querySelector("textarea[data-h3-prompt-clip-id]");
+}
+
+/* 提示词框上面那行小标签（"提示词" / "提示词 (EXT)"）—— 按钮就挂在它右边，
+   不新增一行，卡片高度预算不受影响。 */
+function yanhuoFindPromptLabel(card) {
+    return (
+        Array.from(card.children).find(
+            (el) =>
+                el.tagName === "DIV" &&
+                /^(提示词|Prompt)(\\s|$|\\()/.test((el.textContent || "").trim()),
+        ) || null
+    );
+}
+
+function yanhuoCardIndex(cards, card) {
+    return Array.from(cards.children).indexOf(card);
+}
+
+function yanhuoEnhancePromptBox(node, runtime, cards, card) {
+    const rt = node.__h3Extender || runtime;
+    const index = yanhuoCardIndex(cards, card);
+    const clip = rt?.state?.clips?.[index];
+    const entry = findInputEntry(node, "prompt_" + (index + 1));
+    const connected = Boolean(entry && inputConnected(entry.input));
+    const box = yanhuoFindPromptBox(card);
+    const label = yanhuoFindPromptLabel(card);
+
+    if (label && label.dataset.yanhuoPromptBar !== "1") {
+        label.dataset.yanhuoPromptBar = "1";
+        label.style.display = "flex";
+        label.style.alignItems = "center";
+        label.style.gap = "6px";
+        const spacer = document.createElement("span");
+        spacer.style.flex = "1 1 auto";
+
+        const refresh = document.createElement("button");
+        refresh.type = "button";
+        refresh.textContent = "刷新";
+        refresh.style.cssText = "font-size:10px;padding:1px 7px;line-height:1.3;flex:0 0 auto;";
+        refresh.addEventListener("click", (e) => {
+            e.preventDefault();
+            const now = node.__h3Extender || runtime;
+            const idx = yanhuoCardIndex(now.cards, card);
+            const c = now?.state?.clips?.[idx];
+            const external = yanhuoExternalPromptValue(node, idx + 1);
+            if (!c) return;
+            if (external === null) {
+                /* v1.12.1：别再静默失败。取值失败基本只有两种原因，按钮上直接
+                   说清楚，免得以为"刷新坏了"。 */
+                const why = __yanhuoFindInputEntry(node, "prompt_" + (idx + 1))
+                    ? "上游节点没有可读的文本控件（拼接/处理类节点要运行后才产出文本，前端读不到）"
+                    : "集合节点上 prompt_" + (idx + 1) + " 没接线，或 per_clip_inputs 没连";
+                refresh.textContent = "取不到值";
+                refresh.title = why;
+                setTimeout(() => {
+                    refresh.textContent = "刷新";
+                    refresh.title =
+                        "把 prompt_" + (idx + 1) + " 端口当前的提示词重新导入本框（不运行采样）";
+                }, 2200);
+                return;
+            }
+            c.prompt = external;
+            const b = yanhuoFindPromptBox(card);
+            if (b) b.value = external;
+            updateHidden(node, now);
+            captureNativeWorkflowState(node, now);
+            notifyWorkflowChanged(node, now);
+        });
+
+        const lock = document.createElement("button");
+        lock.type = "button";
+        lock.textContent = "只读";
+        lock.style.cssText = "font-size:10px;padding:1px 7px;line-height:1.3;flex:0 0 auto;";
+        lock.addEventListener("click", (e) => {
+            e.preventDefault();
+            const now = node.__h3Extender || runtime;
+            const idx = yanhuoCardIndex(now.cards, card);
+            const c = now?.state?.clips?.[idx];
+            if (!c) return;
+            const editable = yanhuoPromptEditable(now, c, idx);
+            if (editable) {
+                /* 切回只读：端口文本整体覆盖回来，与上游默认行为对齐。 */
+                const external = yanhuoExternalPromptValue(node, idx + 1);
+                if (external !== null) c.prompt = external;
+            }
+            yanhuoSetPromptEditable(now, c, !editable, idx);
+            updateHidden(node, now);
+            captureNativeWorkflowState(node, now);
+            notifyWorkflowChanged(node, now);
+            render(node, now);
+        });
+
+        label.append(spacer, refresh, lock);
+        card.__yanhuoPromptRefresh = refresh;
+        card.__yanhuoPromptLock = lock;
+    }
+
+    const refreshBtn = card.__yanhuoPromptRefresh;
+    const lockBtn = card.__yanhuoPromptLock;
+    if (refreshBtn && lockBtn) {
+        /* 端口没连就没有"外部提示词"可刷，两个按钮一并隐藏。 */
+        refreshBtn.style.display = connected ? "" : "none";
+        lockBtn.style.display = connected ? "" : "none";
+        if (connected) {
+            const editable = yanhuoPromptEditable(rt, clip, index);
+            lockBtn.textContent = editable ? "编辑" : "只读";
+            lockBtn.title = editable
+                ? "编辑态：本框可改，改动写回本片段，运行时不会被 prompt_" +
+                  (index + 1) +
+                  " 覆盖。再点一次切回只读（端口提示词整体覆盖回来）。"
+                : "只读态：由 prompt_" +
+                  (index + 1) +
+                  " 端口驱动，改不动。再点一次切到编辑态（可自由修改，运行时不被覆盖）。";
+            refreshBtn.title =
+                "把 prompt_" + (index + 1) + " 端口当前的提示词重新导入本框（不运行采样）";
+        }
+    }
+
+    if (box && clip) {
+        /* v1.12.1：readOnly 显式给值，不再只在 connected 时才动。
+           端口没连（per_clip_inputs 没连、或集合节点上这个 prompt_N 没连）
+           就必须能自由编辑 —— 上游只在 promptExternallyDriven 时置
+           readOnly，而旧工作流残留的空插座会让那个判定摇摆不定。 */
+        const editable = !connected || yanhuoPromptEditable(rt, clip, index);
+        box.readOnly = !editable;
+        box.style.opacity = connected && !editable ? ".85" : "1";
+        if (box.dataset.yanhuoPromptHooked !== "1") {
+            box.dataset.yanhuoPromptHooked = "1";
+            /* 上游的 input 处理在 promptExternallyDriven 时直接 return，
+               编辑态这条写回路得自己补。不 re-render，避免打字时丢焦点。 */
+            box.addEventListener("input", () => {
+                const now = node.__h3Extender || runtime;
+                const cardEl = box.parentElement;
+                if (!cardEl || !now?.cards) return;
+                const idx = yanhuoCardIndex(now.cards, cardEl);
+                const c = now?.state?.clips?.[idx];
+                if (!c || !yanhuoPromptEditable(now, c, idx)) return;
+                if (box.value === c.prompt) return;
+                c.prompt = box.value;
+                updateHidden(node, now);
+                captureNativeWorkflowState(node, now);
+            });
+        }
+    }
 }
 
 /* ---- 全局条 UI ---- */
@@ -1671,6 +2017,227 @@ app.registerExtension({
 });
 """
 
+# ---------------------------------------------------------------------------
+# v1.12.0：逐段端口搬到「Yanhuo H3 逐段输入集合」节点之后的"透传层"
+#
+# 后端已经把 ref_pack_N / prompt_N / duration_N / ref_audio_N_k 从主节点的
+# INPUT_TYPES 里删掉了，主节点只留一个 per_clip_inputs 聚合端口。但上游那套
+# UI 是**按端口名**找插座的（500ms 镜像、建卡灌值、卡片上的 (EXT) 标记、
+# v1.11.0 的刷新/只读按钮……一共十几处 findInputEntry(node, "prompt_3")）。
+#
+# 逐个改那十几处既容易漏又会和上游更新打架，所以这里只改**一个入口**：
+# 让 findInputEntry 在"本节点没有这个逐段插座"时，顺着 per_clip_inputs 的
+# 连线到集合节点上找。上游代码一行不动，全部自动生效。
+#
+# 配套两道护栏（缺一个就会出事）：
+#   * addDynamicRefInput   —— 上游的动态插座同步会按片段数往上加插座；
+#     透传命中集合节点的插座后它会试图在主节点上建一个同名插座，必须拦掉，
+#     否则主节点又被撑长了。
+#   * removeDynamicRefInput —— 更要拦。它拿的是**集合节点的槽位号**，却对
+#     主节点调 removeInput(slot)，槽位号对不上就是删错插座。
+# ---------------------------------------------------------------------------
+PERCLIP_UI_TAIL = """
+/* ---- v1.12.0：逐段端口住在集合节点上，主节点只做透传 ---- */
+const YANHUO_PER_CLIP_RE = /^(?:ref_pack|prompt|duration|ref_audios)_\\d+$|^ref_audio_\\d+_\\d+$/;
+const YANHUO_BUNDLE_INPUT = "per_clip_inputs";
+
+/* 未包装的原始查找：透传逻辑自己必须先能"只在本节点上找"。 */
+const __yanhuoFindInputEntry = findInputEntry;
+
+function yanhuoPerClipSource(node) {
+    /* 顺着 per_clip_inputs 的连线找到集合节点。没连、连的是自己、或上游
+       没产出都返回 null —— null 时所有逐段端口都等价于"没连"。 */
+    if (!node || typeof inputLinkAtSlot !== "function") return null;
+    const entry = __yanhuoFindInputEntry(node, YANHUO_BUNDLE_INPUT);
+    if (!entry || !inputConnected(entry.input)) return null;
+    const link = inputLinkAtSlot(node, entry.slot);
+    if (!link) return null;
+    let source = null;
+    try {
+        source = node.graph?.getNodeById?.(link.origin_id) || null;
+    } catch (_) {
+        source = null;
+    }
+    return source && source !== node ? source : null;
+}
+
+findInputEntry = function (node, name) {
+    const own = __yanhuoFindInputEntry(node, name);
+    /* v1.12.1：老工作流里主节点上往往还残留着 v1.12.0 之前的同名插座 ——
+       LiteGraph 是从保存的 JSON 里恢复 inputs 的，INPUT_TYPES 把它们删了，
+       存过的工作流里它们照样在。**只要那个残留插座没接线，就不能让它挡住
+       集合节点**，否则 prompt_N / ref_pack_N 一律解析成"未连接"：刷新按钮
+       点了没反应、(EXT) 标记不出现、参考图不进卡片。
+       残留插座**接了线**则说明这条是用户留着的直连，按老语义走，绝不抢。 */
+    if (own && inputConnected(own.input)) return own;
+    if (!YANHUO_PER_CLIP_RE.test(String(name || ""))) return own || null;
+    const source = yanhuoPerClipSource(node);
+    if (!source) return own || null;
+    const remote = __yanhuoFindInputEntry(source, name);
+    return remote || own || null;
+};
+
+const __yanhuoAddDynamicRefInput = addDynamicRefInput;
+addDynamicRefInput = function (node, name, type, tooltip) {
+    /* 主节点上永远不建逐段插座——它们属于集合节点。 */
+    if (YANHUO_PER_CLIP_RE.test(String(name || "")) && !__yanhuoFindInputEntry(node, name)) {
+        return false;
+    }
+    return __yanhuoAddDynamicRefInput(node, name, type, tooltip);
+};
+
+const __yanhuoRemoveDynamicRefInput = removeDynamicRefInput;
+removeDynamicRefInput = function (node, name, snapshot) {
+    /* 同上，而且这一条更关键：透传回来的槽位号是集合节点的，
+       拿它去删主节点的插座会删错东西。 */
+    if (YANHUO_PER_CLIP_RE.test(String(name || "")) && !__yanhuoFindInputEntry(node, name)) {
+        return false;
+    }
+    return __yanhuoRemoveDynamicRefInput(node, name, snapshot);
+};
+
+/* ---- 取值入口也要重定向 ----
+ *
+ * 透传有个陷阱：findInputEntry 返回的 slot 是**集合节点**的槽位号，而
+ * connectedExternalPromptValue/DurationValue 下一步是
+ * ``inputLinkAtSlot(node, entry.slot)`` —— node 还是主节点。拿集合节点的
+ * 槽位号去主节点上找连线，找到的是完全不相干的另一条线（最常见是解析到
+ * model 或 per_clip_inputs 自己），于是端口值永远读不到。
+ *
+ * 所以"取端口当前值"这两个函数必须自己在集合节点上解析——它们内部用的
+ * node 和 slot 才对得上。只查连接状态的地方（建卡、(EXT) 标记、刷新/只读
+ * 按钮的显示）用透传就够了，因为它们只碰 entry.input，不碰 entry.slot。
+ */
+const __yanhuoOrigConnectedDurationValue = connectedExternalDurationValue;
+
+function yanhuoExternalPromptValue(node, clipIndex) {
+    /* 端口真值（不受"编辑态"影响 —— 刷新按钮要的就是这个）。
+       v1.12.1 两处修正：
+       1) 残留但**未接线**的同名插座不抢集合节点（理由见 findInputEntry）。
+       2) 底层那条 __yanhuoOrigConnectedPromptValue(node, ...) 内部是
+          findInputEntry + inputLinkAtSlot，node 与 slot 必须同源；"本节点这条
+          没接"时绝不能拿主节点去解析 —— 槽位号会落到完全不相干的另一条线上。 */
+    const own = __yanhuoFindInputEntry(node, "prompt_" + clipIndex);
+    if (own && inputConnected(own.input)) {
+        const local = __yanhuoOrigConnectedPromptValue(node, clipIndex);
+        if (local !== null) return local;
+    }
+    const source = yanhuoPerClipSource(node);
+    if (source) {
+        const remote = __yanhuoOrigConnectedPromptValue(source, clipIndex);
+        if (remote !== null) return remote;
+    }
+    return null;
+}
+
+function yanhuoExternalDurationValue(node, clipIndex) {
+    const own = __yanhuoFindInputEntry(node, "duration_" + clipIndex);
+    if (own && inputConnected(own.input)) {
+        const local = __yanhuoOrigConnectedDurationValue(node, clipIndex);
+        if (local !== null) return local;
+    }
+    const source = yanhuoPerClipSource(node);
+    if (source) {
+        const remote = __yanhuoOrigConnectedDurationValue(source, clipIndex);
+        if (remote !== null) return remote;
+    }
+    return null;
+}
+
+/* ---- v1.12.1：清掉主节点上残留的旧逐段插座 ----
+ *
+ * 只删**没接线**的。接了线的说明用户还在直连，删了就丢数据，那种情况交给
+ * findInputEntry 的"有线优先"逻辑处理，行为与 v1.12.0 之前一致。
+ * 删完节点也短一截（旧工作流上那一长排空插座终于没了）。
+ */
+function yanhuoPruneLegacyPerClipInputs(node) {
+    if (!node || !Array.isArray(node.inputs) || !node.inputs.length) return 0;
+    let removed = 0;
+    for (let slot = node.inputs.length - 1; slot >= 0; slot--) {
+        const input = node.inputs[slot];
+        if (!input) continue;
+        if (!YANHUO_PER_CLIP_RE.test(String(input.name || ""))) continue;
+        if (input.link !== null && input.link !== undefined) continue;
+        try {
+            node.removeInput(slot);
+            removed += 1;
+        } catch (_) {
+            /* 前端版本差异导致的删不掉就算了，findInputEntry 那边还有兜底。 */
+        }
+    }
+    if (removed > 0) {
+        console.info(
+            "[Yanhuo H3 SelfLift] v1.12.1：已清理 " + removed + " 个空的旧逐段端口"
+            + "（ref_pack_N / prompt_N / duration_N / ref_audio_N_k 已搬到"
+            + "「Yanhuo H3 逐段输入集合」节点）。",
+        );
+    }
+    return removed;
+}
+
+connectedExternalDurationValue = function (node, clipIndex) {
+    return yanhuoExternalDurationValue(node, clipIndex);
+};
+
+/* ---- v1.12.1：Get / Set / 文本处理这类"代理节点"要先顺着输入链走 ----
+ *
+ * 上游 textWidgetValueFromNode 的写法是"先信自己身上的字符串控件，找不到再
+ * 顺着输入链走"，注释里写的是反过来的。Get 节点身上恰好有一个 combo 控件，
+ * 值是查找用的令牌（不是真正的提示词），于是永远命中第一个分支 —— 这就是
+ * 「接了 Get 节点，点刷新什么都刷不出来」的原因。
+ *
+ * 这里按"是不是代理节点"分流：纯导管（没控件）、combo 控件、或类名里带
+ * get/set/reroute/primitive 等关键字的，一律先走输入链，拿不到再退回自己。
+ */
+const __yanhuoOrigTextWidgetValueFromNode = textWidgetValueFromNode;
+const YANHUO_PROXY_CLASS_RE = /(get|set|reroute|route|switch|relay|pass|bridge|primitive|pipe|bus)/i;
+
+function yanhuoLooksLikeProxy(source) {
+    const cls = String(source?.comfyClass || source?.type || "");
+    if (cls && YANHUO_PROXY_CLASS_RE.test(cls)) return true;
+    const widgets = Array.isArray(source?.widgets) ? source.widgets : [];
+    /* 纯导管：自己一个控件都没有，值只能从上游来。 */
+    if (!widgets.length) return true;
+    /* combo 控件的值是"选哪个"的令牌，不是真正的内容（Get 节点就是这种）。 */
+    return widgets.some(
+        (w) => w && !w.disabled && String(w?.type || "").toLowerCase() === "combo",
+    );
+}
+
+function yanhuoLinkedInputs(source) {
+    if (!Array.isArray(source?.inputs)) return [];
+    const out = [];
+    for (let slot = 0; slot < source.inputs.length; slot++) {
+        const input = source.inputs[slot];
+        if (!input || input.link === null || input.link === undefined) continue;
+        out.push(slot);
+    }
+    return out;
+}
+
+textWidgetValueFromNode = function (source, depth = 0, seenNodes = null) {
+    if (!source) return null;
+    const seen = seenNodes instanceof Set ? seenNodes : new Set();
+    if (depth > 4 || (source.id != null && seen.has(source.id))) return null;
+    const linked = yanhuoLinkedInputs(source);
+    /* 只有"看起来像代理"且**唯一**一条输入链时才顺着走。
+       多个输入的拼接/处理节点就算顺着走也拿不到合并结果（那是运行期才算得
+       出来的），返回一个上游片段反而更误导 —— 直接交给下面的兜底。 */
+    if (!yanhuoLooksLikeProxy(source) || linked.length !== 1) {
+        return __yanhuoOrigTextWidgetValueFromNode(source, depth, new Set(seen));
+    }
+    const next = new Set(seen);
+    if (source.id != null) next.add(source.id);
+    const link = inputLinkAtSlot(source, linked[0]);
+    const upstream = link ? source.graph?.getNodeById?.(link.origin_id) : null;
+    if (upstream) {
+        const nested = textWidgetValueFromNode(upstream, depth + 1, next);
+        if (nested !== null && String(nested).trim() !== "") return nested;
+    }
+    return __yanhuoOrigTextWidgetValueFromNode(source, depth, new Set(seen));
+};
+"""
+
 
 def _assert_clean_js(text: str) -> None:
     """v1.8.1：build 期的最后一道闸门。
@@ -1742,7 +2309,7 @@ def build(source: Path = SOURCE, destination: Path = TARGET_FILE) -> Path:
     tail = tail.replace("__PREVIEW_MIN_W__", str(YANHUO_PREVIEW_MIN_W))
     tail = tail.replace("__PREVIEW_H__", str(YANHUO_PREVIEW_H))
 
-    out = banner + text + tail + GLOBALS_UI_TAIL
+    out = banner + text + tail + GLOBALS_UI_TAIL + PERCLIP_UI_TAIL
     _assert_clean_js(out)
 
     destination.parent.mkdir(parents=True, exist_ok=True)

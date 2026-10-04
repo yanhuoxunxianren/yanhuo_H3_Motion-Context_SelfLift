@@ -92,6 +92,46 @@ class OutputPathTests(unittest.TestCase):
                 sys.modules.pop("folder_paths", None)
 
 
+class OutputExtensionTests(unittest.TestCase):
+    """v1.13.1：后缀必须跟随导出规格，否则 FFV1 会被塞进 .mp4 而 mux 失败。"""
+
+    def test_default_and_h264_use_mp4(self):
+        self.assertEqual(segment_export.output_extension(None), "mp4")
+        self.assertEqual(segment_export.output_extension({}), "mp4")
+        self.assertEqual(segment_export.output_extension({"codec": "H.264"}), "mp4")
+        self.assertEqual(segment_export.output_extension({"codec": "H.265 / HEVC"}), "mp4")
+        self.assertEqual(
+            segment_export.output_extension({"codec": "H.264 CPU (libx264)"}), "mp4"
+        )
+
+    def test_ffv1_uses_mkv(self):
+        self.assertEqual(segment_export.output_extension({"codec": "FFV1 lossless"}), "mkv")
+
+    def test_unknown_codec_falls_back_to_mp4(self):
+        self.assertEqual(segment_export.output_extension({"codec": "AV1"}), "mp4")
+        self.assertEqual(segment_export.output_extension("not-a-dict"), "mp4")
+
+    def test_path_follows_profile(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _with_folder_paths(tmp)
+            try:
+                lossless = segment_export.output_video_path(
+                    "507", 2, 5, {"codec": "FFV1 lossless"}
+                )
+                self.assertEqual(lossless.name, "507_clip_02_of_05.mkv")
+                normal = segment_export.output_video_path("507", 2, 5, {"codec": "H.264"})
+                self.assertEqual(normal.name, "507_clip_02_of_05.mp4")
+                # 不传规格时保持旧行为，老调用方不受影响
+                self.assertEqual(
+                    segment_export.output_video_path("507", 2, 5).name,
+                    "507_clip_02_of_05.mp4",
+                )
+            finally:
+                sys.modules.pop("folder_paths", None)
+
+
 class AudioBitrateFallbackTests(unittest.TestCase):
     def test_falls_back_when_upstream_missing(self):
         # vendor.extender_module() 抛异常时必须安全回落 192k，绝不向上抛。

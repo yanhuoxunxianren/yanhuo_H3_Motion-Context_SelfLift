@@ -125,6 +125,28 @@ def _euler_check(sampler):
     return None
 
 
+def _require_flow_model(model, stage=""):
+    """Every stage runs on the same rectified-flow schedule; check one model.
+
+    v1.10.0：pixel-space sanity check — with ``model_hires`` connected the two
+    stages can be *different* checkpoints, and both must understand the shared
+    sigma table.
+    """
+    model_sampling = model.get_model_object("model_sampling")
+    if not isinstance(model_sampling, comfy.model_sampling.CONST):
+        raise ValueError(
+            "SelfLift requires a rectified-flow model (constant-shift sampling). "
+            f"MiniMax H3 qualifies; the {stage or 'model'} input does not."
+        )
+
+
+def validate_hires_model(model, settings: config.SelfLiftSettings, log=None):
+    """Validate the optional ``model_hires`` used by the high-resolution stage."""
+    if not settings.enabled or model is None:
+        return
+    _require_flow_model(model, stage="`model_hires`（高分辨率阶段）")
+
+
 def validate_plan(model, sampler_name, scheduler, steps, denoise, settings: config.SelfLiftSettings,
                   sigmas=None):
     """Raise ``ValueError`` with actionable text before any GPU work starts."""
@@ -149,12 +171,7 @@ def validate_plan(model, sampler_name, scheduler, steps, denoise, settings: conf
         # Widget steps/denoise are bypassed entirely; the schedule IS the input.
         settings = _validate_external_sigmas(external, settings)
 
-    model_sampling = model.get_model_object("model_sampling")
-    if not isinstance(model_sampling, comfy.model_sampling.CONST):
-        raise ValueError(
-            "SelfLift requires a rectified-flow model (constant-shift sampling). "
-            "MiniMax H3 qualifies; this model does not."
-        )
+    _require_flow_model(model, stage="`model`")
 
     sampler = _sampler_object(sampler_name)
     problem = _euler_check(sampler)
@@ -224,7 +241,7 @@ def _build_lifter(mods, settings: config.SelfLiftSettings):
 
 
 def _dual_stage(base_module, mods, settings, vae, model, conditioning, latent, seed, sampler_name,
-                scheduler, steps, denoise, sigmas_override=None):
+                scheduler, steps, denoise, sigmas_override=None, model_hires=None):
     external = normalize_sigmas(sigmas_override)
     source = "widgets"
     if external is not None:
@@ -247,8 +264,11 @@ def _dual_stage(base_module, mods, settings, vae, model, conditioning, latent, s
     lifter = _build_lifter(mods, settings)
 
     _LOG.info(
+        # 注意：占位符个数必须和下面实参个数一一对应。v1.10.0 加了 hires 那段
+        # 却漏了 %s，logging 直接抛 "not all arguments converted"，整行 plan
+        # 日志就静默不见了（只有 --- Logging error --- 露出来）。
         "[Yanhuo SelfLift] plan: %s | schedule=%s steps=%d | low %d step(s) -> %s lift "
-        "-> high %d step(s)%s",
+        "-> high %d step(s)%s%s",
         settings.plan_text(int(steps)),
         source,
         steps,
@@ -256,8 +276,11 @@ def _dual_stage(base_module, mods, settings, vae, model, conditioning, latent, s
         "learned" if lifter is not None else settings.latent_upsample,
         max(0, int(steps) - transition_step),
         " (tiled)" if settings.highres_tiling else "",
+        " | hires=model_hires" if model_hires is not None else "",
     )
 
+    # 上游约定：低分辨率/高噪阶段（一采）永远跑 model；高分辨率/低噪阶段（二采）
+    # 跑 model_hires，未连接时 None -> upstream 自动回退成同一个 model。
     result = mods.progressive_sample(
         model,
         conditioning,          # positive
@@ -277,7 +300,7 @@ def _dual_stage(base_module, mods, settings, vae, model, conditioning, latent, s
         settings.latent_upsample,
         latent_lifter=lifter,
         highres_tiling=settings.highres_tiling,
-        model_hires=None,
+        model_hires=model_hires,
     )
 
     out = dict(result)
@@ -289,7 +312,8 @@ def _dual_stage(base_module, mods, settings, vae, model, conditioning, latent, s
     return out
 
 
-def make_replacement(base_module, mods, settings, vae, sigmas_override=None, session=None):
+def make_replacement(base_module, mods, settings, vae, sigmas_override=None, session=None,
+                     model_hires=None):
     """Build a drop-in ``_sample_h3`` replacement bound to this execution."""
     original = getattr(base_module, "_sample_h3", None)
     if original is None:
@@ -318,6 +342,7 @@ def make_replacement(base_module, mods, settings, vae, sigmas_override=None, ses
             steps,
             denoise,
             sigmas_override=sigmas_override,
+            model_hires=model_hires,
         )
 
     replacement.__doc__ = "Yanhuo SelfLift dual-resolution stand-in for _sample_h3."
@@ -327,7 +352,8 @@ def make_replacement(base_module, mods, settings, vae, sigmas_override=None, ses
 
 
 @contextlib.contextmanager
-def installed_sampler(settings, vae, mods=None, base_module=None, sigmas=None, node_id=None):
+def installed_sampler(settings, vae, mods=None, base_module=None, sigmas=None, node_id=None,
+                      model_hires=None):
     """Install the dual-stage sampler for the duration of one Extender run.
 
     ``node_id`` 是本次执行的节点 id，草稿预览用它把动图投递到对应的节点面板上。
@@ -338,6 +364,10 @@ def installed_sampler(settings, vae, mods=None, base_module=None, sigmas=None, n
     ``sigmas`` is an optional externally supplied schedule (the
     ``selflift_sigmas`` input); when present it replaces the scheduler/steps/
     denoise widgets for every clip in this run.
+    ``model_hires`` is the optional v1.10.0 second-stage model: the
+    low-resolution prefix always samples with the stage's own model, while the
+    high-resolution suffix uses ``model_hires`` (falling back to the same model
+    when nothing is connected).
     """
     if not settings.enabled:
         yield False
@@ -360,7 +390,8 @@ def installed_sampler(settings, vae, mods=None, base_module=None, sigmas=None, n
     session = preview.DraftPreviewSession(node_id=node_id)
     restore_preview = preview.install_draft_callback(session)
     replacement = make_replacement(
-        base_module, mods, settings, vae, sigmas_override=sigmas, session=session
+        base_module, mods, settings, vae, sigmas_override=sigmas, session=session,
+        model_hires=model_hires,
     )
     with _SWAP_LOCK:
         original = getattr(base_module, "_sample_h3", None)
@@ -379,4 +410,4 @@ def installed_sampler(settings, vae, mods=None, base_module=None, sigmas=None, n
                 restore_preview()
 
 
-__all__ = ["installed_sampler", "validate_plan"]
+__all__ = ["installed_sampler", "validate_hires_model", "validate_plan"]

@@ -19,7 +19,7 @@ import logging
 import time
 from pathlib import Path
 
-from . import config, engine, semantic_bridge, vendor
+from . import config, engine, perclip_inputs, semantic_bridge, vendor
 
 _LOG = logging.getLogger("yanhuo_h3_selflift")
 
@@ -85,6 +85,48 @@ def _apply_yanhuo_globals(clips_json):
         return clips_json
     return json.dumps(payload, ensure_ascii=False)
 
+
+# ---------------------------------------------------------------------------
+# v1.11.0 条件卡提示词的「只读 / 编辑」
+#
+# 上游对 prompt_N 端口是"完全接管"语义，一共三道：
+#   1) 建卡片时把端口文本灌进提示词框并置 readOnly；
+#   2) 每 500ms 的镜像轮询把框和 clip.prompt 同步成端口文本；
+#   3) 排队运行时 _apply_per_clip_prompt_overrides() 再用端口值**整体覆盖**一次。
+# 前两道由前端的 prompt_edit 标记绕开，第三道只能在这里拦：把处于编辑态的
+# 片段对应的 prompt_N 从 payload 里摘掉。父类那边 ``kwargs.get(f"prompt_{i+1}")``
+# 拿到 None，而它的语义是「None / 空串不覆盖」——卡片里改过的文本因此保住。
+# ---------------------------------------------------------------------------
+def _edited_prompt_indices(clips_json):
+    """返回处于编辑态的片段序号（1-based，对应 prompt_N 端口）。"""
+    if not isinstance(clips_json, str) or "prompt_edit" not in clips_json:
+        return []
+    try:
+        payload = json.loads(clips_json)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    global_cfg = payload.get("yanhuo_global")
+    if not isinstance(global_cfg, dict):
+        return []
+    flags = global_cfg.get("prompt_edit")
+    if not isinstance(flags, dict) or not flags:
+        return []
+    clips = payload.get("clips")
+    if not isinstance(clips, list):
+        return []
+    out = []
+    for i, clip in enumerate(clips):
+        if not isinstance(clip, dict):
+            continue
+        # 片段 id 是前端记录的键；父类归一化后默认是 clip_{i+1}。
+        clip_id = str(clip.get("id") or f"clip_{i + 1}")
+        if flags.get(clip_id):
+            out.append(i + 1)
+    return out
+
+
 # 父节点控件提示词的中文对照（v1.2.0 全量中文化）。
 # 只覆盖文案，绝不改动键序/类型，保证旧工作流的控件按位置映射不受影响。
 _INHERITED_TOOLTIPS_ZH = {
@@ -119,49 +161,66 @@ _INHERITED_TOOLTIPS_ZH = {
     "ref_video_3": "可选参考视频 3（IMAGE 帧序列；H3 按 24fps 处理，源帧率不同请接 ref_video_fps_3）。提示词中用 <Video 3> 引用。",
     "ref_video_fps_3": "参考视频 3 的源帧率（来自 Get Video Components）；未连接时按 24fps 处理。",
     "ref_video_audio_3": "参考视频 3 的音轨。",
-    "ref_pack_1": "CLIP 1 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_2": "CLIP 2 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_3": "CLIP 3 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_4": "CLIP 4 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_5": "CLIP 5 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_6": "CLIP 6 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_7": "CLIP 7 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_8": "CLIP 8 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_9": "CLIP 9 专属参考图包（可用「Yanhuo 参考图打包」节点生成）：图像列表成为该片段自己的 Picture 1..K 参考，不影响其他片段。",
-    "ref_pack_10": "CLIP 10 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_11": "CLIP 11 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_12": "CLIP 12 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_13": "CLIP 13 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_14": "CLIP 14 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_15": "CLIP 15 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_16": "CLIP 16 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_17": "CLIP 17 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_18": "CLIP 18 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_19": "CLIP 19 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_20": "CLIP 20 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_21": "CLIP 21 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_22": "CLIP 22 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_23": "CLIP 23 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_24": "CLIP 24 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_25": "CLIP 25 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_26": "CLIP 26 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_27": "CLIP 27 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_28": "CLIP 28 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_29": "CLIP 29 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_30": "CLIP 30 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_31": "CLIP 31 专属参考图包（同 ref_pack_1 说明）。",
-    "ref_pack_32": "CLIP 32 专属参考图包（同 ref_pack_1 说明）。",
+    # v1.12.0：ref_pack_N / prompt_N / duration_N / ref_audio_N_k 这一整批逐段
+    # 端口已经搬到「Yanhuo H3 逐段输入集合」节点上（主节点只留 per_clip_inputs
+    # 一个聚合端口），它们的中文提示词随之搬去 perclip_inputs.py。
 }
 
-# 逐片段 prompt_N / duration_N / ref_audio_N_k 的提示词用模板生成（共 32 组）。
+# 逐片段 prompt_N / duration_N / ref_audio_N_k 的提示词模板。v1.12.0 起这批端口
+# 由「Yanhuo H3 逐段输入集合」节点声明（见 perclip_inputs.py），主节点上已经没有
+# 它们了；模板留在这里只为兜底（万一上游 Extender 又把它们加回来，提示词仍是中文）。
 _PER_CLIP_TEMPLATE_TOOLTIPS = {
     "prompt": "CLIP {n} 的外部提示词覆盖：连接后替换卡片提示词（空串忽略，不清空卡片）。",
     "duration": "CLIP {n} 的外部时长覆盖（秒）：连接后替换卡片 Duration，卡片上显示 (EXT)。",
     "ref_audio": "CLIP {n} 专属参考音频 {k}：仅作用于该片段，不影响其他片段。",
 }
 
-# 本节点移除的全局 pack 端口（保留 per-CLIP 的 ref_pack_N / prompt_N / ref_audio_N_x）。
+# 本节点移除的全局 pack 端口（v1.2.0 起）。
 _REMOVED_GLOBAL_INPUTS = ("ref_pack", "prompt_pack")
+
+# v1.12.0：逐段端口（ref_pack_N / prompt_N / duration_N / ref_audio_N_k）整体搬到
+# 「Yanhuo H3 逐段输入集合」节点，主节点只留一个 per_clip_inputs 聚合端口。
+# v1.13.0：集合节点上的 ref_audio_N_k 合并成 ref_audios_N（一段音频批次），
+# 但父类仍声明 ref_audio_N_k，所以主节点这边得继续 pop 掉**新旧两批名字**——
+# 只 pop 新名字的话，父类那 96 个旧音频插座会原样长回主节点上。
+_REMOVED_PER_CLIP_INPUTS = tuple(perclip_inputs.per_clip_port_names()) + tuple(
+    perclip_inputs.legacy_ref_audio_slot_names()
+)
+
+# 上面两批合起来：测试与自检用它判断"父节点有、本节点故意没有"的端口。
+_REMOVED_INPUTS = frozenset(_REMOVED_GLOBAL_INPUTS) | frozenset(_REMOVED_PER_CLIP_INPUTS)
+
+_PER_CLIP_BUNDLE_TOOLTIP = (
+    "逐段输入（可选）：接「Yanhuo H3 逐段输入集合」节点的输出。"
+    "该节点把各 CLIP N 条件卡的参考图包 / 提示词 / 时长 / 参考音频集中在一处接线，"
+    "第 N 组端口只作用于第 N 张条件卡。"
+    "不接：各条件卡用自己的卡片值（与以前不接 prompt_N / ref_pack_N 完全一样）。"
+    "接了：等价于把这些值分别接到对应的 ref_pack_N / prompt_N / duration_N / ref_audio_N_k 端口，"
+    "优先级、缓存失效规则、卡片上「只读 / 编辑」开关的行为一条都不变。"
+)
+
+
+def _per_clip_bundle_spec():
+    return (
+        perclip_inputs.PER_CLIP_BUNDLE_TYPE,
+        {"tooltip": _PER_CLIP_BUNDLE_TOOLTIP},
+    )
+
+# v1.10.0 二采专用模型端口：一采（低分辨率/高噪）永远用父节点的 model，
+# 二采（高分辨率/低噪）用 model_hires；未连接时两个阶段共用同一个 model。
+_MODEL_HIRES_TOOLTIP = (
+    "二采（高分辨率/低噪阶段）专用模型，可选。"
+    "不连接：一采与二采都用上面的 model。"
+    "连接后：一采（低分辨率，定空间动作轮廓）用 model，二采（高分辨率，补细节）用 model_hires，"
+    "常用做法是给二采单独挂一份 LoRA/一个精修 checkpoint，让整体更快或更细。"
+    "连接后各条件卡的 LoRA 与全局 LoRA 只作用于一采（model），不会渗进二采——"
+    "二采只走 model_hires 自己串的那条 LoRA 链；拔掉这个端口才恢复「两个阶段都吃条件卡 LoRA」。"
+    "必须与 model 同架构、同 latent 格式（都是 H3 系列），否则高分辨率阶段出来的东西会串味。"
+)
+
+
+def _model_hires_spec():
+    return ("MODEL", {"tooltip": _MODEL_HIRES_TOOLTIP})
 
 
 try:  # Resolve the parent node class once, at import time.
@@ -647,6 +706,8 @@ if _BASE_EXTENDER is not None:
             "经一致性提升（SelfLift-zero 或学习型 latent upscaler）后再高分辨率精修细节；"
             "完整保留 Motion Context 跨段续接、参考图/视频/音频、磁盘缓存与项目管理。"
             "连接 selflift_sigmas 可用外部 sigma 调度表（基本调度器→插值→Refiner）接管整条采样调度。"
+            "给 model_hires 接一个模型（或 LoRA 组合）即可把二采（高分辨率/低噪）单独交给它，"
+            "一采仍然用 model——这样「起草」与「精修」可以由不同的 checkpoint/LoRA 分别负责。"
         )
         CATEGORY = "MiniMax H3/SelfLift"
         FUNCTION = "extend_with_selflift"
@@ -658,11 +719,20 @@ if _BASE_EXTENDER is not None:
             merged = _localize_inherited_inputs(spec)
             required = dict(merged.get("required") or {})
             optional = dict(merged.get("optional") or {})
-            # v1.2.0：移除全局 ref_pack / prompt_pack 端口。逐片段的
-            # ref_pack_N / prompt_N / duration_N / ref_audio_N_x 全部保留——
+            # v1.2.0：移除全局 ref_pack / prompt_pack 端口。
             # 两者都是父节点的 optional 输入，移除后 extend() 收到 None，
             # 父逻辑按"未连接"处理，行为安全。
             for name in _REMOVED_GLOBAL_INPUTS:
+                optional.pop(name, None)
+            # v1.12.0：逐段端口整体搬到「Yanhuo H3 逐段输入集合」节点。
+            # 同样是 optional，删掉后父类 kwargs.get("prompt_1") 拿到 None，
+            # 语义等于"这个端口没连"——和以前不连线一模一样。
+            #
+            # 注意：老工作流里已经连好的 prompt_1 / ref_pack_1 连线**不会**因此
+            # 失效——那些插座名在工作流 JSON 里还留着，ComfyUI 照旧把值送进
+            # kwargs（execution.get_input_data 对"已声明之外的键"也照样解析连线），
+            # 父类照旧吃得到。所以这是纯增量改动：新节点短，老工作流不坏。
+            for name in _REMOVED_PER_CLIP_INPUTS:
                 optional.pop(name, None)
             merged["required"] = required
             merged["optional"] = optional
@@ -670,10 +740,23 @@ if _BASE_EXTENDER is not None:
             # map their widgets positionally, so new inputs must never be inserted
             # ahead of an existing one.
             required.update(_widget_spec())
+            # v1.10.0 二采模型端口：必须放 optional。
+            # 本机的 ComfyUI（前端 1.53.6 + execution.validate_prompt）对"必填插座
+            # 没连线"是硬报错（Required input is missing）——前端 graphToPrompt 只会
+            # 把**已连线**的插座写进 prompt，未连线的连键都不出现，于是整条工作流
+            # 直接跑不起来。所以哪怕用户想要它在 model 正下方，也只能放 optional：
+            # 端口落在节点最下方，但不连线完全可用、老工作流零影响。
+            optional[config.MODEL_HIRES_INPUT] = _model_hires_spec()
+            # v1.12.0 逐段输入聚合端口。同样放 optional（同上：optional 才允许
+            # 不连线），且是最后一个键，不会挤动任何已有控件的顺序。
+            optional[perclip_inputs.PER_CLIP_BUNDLE_INPUT] = _per_clip_bundle_spec()
+            merged["required"] = required
+            merged["optional"] = optional
             return merged
 
         def extend_with_selflift(self, **kwargs):
             socket_present = "selflift_sigmas" in (kwargs or {})
+            hires_present = config.MODEL_HIRES_INPUT in (kwargs or {})
             settings, payload = split_settings(kwargs)
             raw_sigmas = payload.pop("selflift_sigmas", None)
             sigmas = raw_sigmas
@@ -683,8 +766,49 @@ if _BASE_EXTENDER is not None:
                 settings = dataclasses.replace(settings, sigmas_digest=config.sigmas_digest(sigmas))
                 if not settings.uses_external_sigmas():
                     sigmas = None  # empty/garbage input: fall back to the widgets
+            # v1.10.0：二采模型不是控件，必须自己从 payload 里取出来——留着会原样
+            # 传给父类 extend()，而父类不认识这个键（TypeError）。
+            raw_hires = payload.pop(config.MODEL_HIRES_INPUT, None)
+            model_hires = raw_hires
+            if model_hires is not None:
+                digest = config.model_digest(model_hires)
+                if not digest:
+                    # 读不出权重（自定义包装/权重没驻留）时退到对象地址：宁可多渲一次，
+                    # 也不能让换了模型还吃旧缓存。
+                    digest = f"obj:{id(model_hires) & 0xFFFFFFFFFFFF:X}"
+                settings = dataclasses.replace(
+                    settings, hires_model_linked=True, hires_model_digest=digest
+                )
+            # v1.12.0：把「逐段输入集合」节点送来的 bundle 摊平回 payload。
+            # 必须在所有已有逻辑**之前**——全局 LoRA/种子、v1.11.0 的编辑态提示词
+            # 摘键、缓存失效、父类 extend() 全都只看 payload 里的 prompt_N /
+            # duration_N / ref_pack_N / ref_audio_N_k，摊平完它们一行都不用改。
+            raw_bundle = payload.pop(perclip_inputs.PER_CLIP_BUNDLE_INPUT, None)
+            unpacked, bundle_error = perclip_inputs.unpack_bundle(raw_bundle)
+            if bundle_error:
+                _LOG.warning("[Yanhuo SelfLift] %s", bundle_error)
+            elif unpacked:
+                # setdefault：老工作流直接连在主节点上的同名端口优先（那种情况键
+                # 已经在 payload 里了），bundle 只补缺的，绝不覆盖显式连线。
+                for name, value in unpacked.items():
+                    payload.setdefault(name, value)
+                _LOG.info(
+                    "[Yanhuo SelfLift] 已接入逐段输入集合：%s。",
+                    perclip_inputs.describe_bundle(raw_bundle),
+                )
             # v1.3.0：全局 LoRA / 全局种子在进入父类（含缓存失效计算）之前生效。
             payload["clips_json"] = _apply_yanhuo_globals(payload.get("clips_json"))
+            # v1.11.0：编辑态的卡片不能让 prompt_N 端口把改过的提示词冲掉。
+            # 只在父类之前摘键——父类自己的语义（None/空串不覆盖）负责剩下的一半。
+            edited_prompts = _edited_prompt_indices(payload.get("clips_json"))
+            if edited_prompts:
+                dropped = [i for i in edited_prompts if payload.pop(f"prompt_{i}", None) is not None]
+                if dropped:
+                    _LOG.info(
+                        "[Yanhuo SelfLift] 条件卡提示词处于编辑态：本次运行已忽略端口 %s 的值，"
+                        "改用卡片里改过的提示词。点卡片上的「刷新」或切回「只读」才会重新导入端口文本。",
+                        "、".join(f"prompt_{i}" for i in dropped),
+                    )
             # v1.3.1：先按本次实际的步数把切分点定下来。必须在这里完成，因为
             # 缓存签名用的是 settings.transition_step —— 若只在校验里临时钳制，
             # 之后把 steps 提高到让原值合法时，有效方案变了而签名不变，就会吃
@@ -739,6 +863,20 @@ if _BASE_EXTENDER is not None:
                         payload.get("steps"), payload.get("scheduler"), payload.get("denoise"),
                         _describe_sigmas_link(payload),
                     )
+                # v1.10.0：这次到底谁跑一采、谁跑二采，也要说清楚。
+                if model_hires is not None:
+                    _LOG.info(
+                        "[Yanhuo SelfLift] 双模型：一采（低分辨率/高噪）%d 步用 model，"
+                        "二采（高分辨率/低噪）%d 步用 model_hires。",
+                        settings.transition_step,
+                        max(0, int(steps) - int(settings.transition_step)),
+                    )
+                elif hires_present and raw_hires is None:
+                    _LOG.warning(
+                        "[Yanhuo SelfLift] model_hires 端口有连线、但这次送到的值是 None"
+                        "——上游节点这次没有产出模型（被静音/旁路/在没执行的分支上）。"
+                        "一采与二采本次都用 model。"
+                    )
             _log_reference_counts(payload)
             if settings.enabled:
                 owner = str(
@@ -755,11 +893,13 @@ if _BASE_EXTENDER is not None:
                     log=_LOG,
                 )
                 _validate_active_model(settings, payload, log=_LOG, sigmas=sigmas)
+                engine.validate_hires_model(model_hires, settings, log=_LOG)
             with engine.installed_sampler(
                 settings,
                 payload.get("vae"),
                 sigmas=sigmas,
                 node_id=payload.get("unique_id"),
+                model_hires=model_hires,
             ):
                 # v1.6.0：语义桥包装上游逐 CLIP 的 conditioning 构建函数，
                 # 只在本节点本次执行期间生效。
@@ -773,6 +913,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 if _BASE_EXTENDER is not None:
     NODE_CLASS_MAPPINGS[NODE_NAME] = YanhuoH3MotionContextSelfLift
     NODE_DISPLAY_NAME_MAPPINGS[NODE_NAME] = NODE_DISPLAY_NAME
+
+# v1.12.0 逐段输入集合节点。它不依赖 Extender 也能用（只是没地方接），
+# 但既然主节点的端口已经搬过去了，两个节点必须同生共死——主节点没加载出来时
+# 单独挂一个集合节点只会让人更困惑。
+if _BASE_EXTENDER is not None:
+    NODE_CLASS_MAPPINGS.update(perclip_inputs.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(perclip_inputs.NODE_DISPLAY_NAME_MAPPINGS)
 
 
 __all__ = [

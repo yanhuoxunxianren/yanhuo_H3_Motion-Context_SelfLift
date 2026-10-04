@@ -19,13 +19,16 @@
 | **双分辨率采样** | 低分辨率 Euler 前缀 → 干净端点预测 → 伪影感知一致性提升 → 高分辨率 Euler 后缀 |
 | **Motion Context 完整保留** | conditioning 仍带 `minimax_keyframes` / `minimax_refs`，latent 仍是 Extender 的 nested AV latent，音频仍走复用 Euler 边界步 |
 | **外接 SIGMAS** | 可选 `selflift_sigmas` 端口，把整条 sigma 调度表交给外部链接管 |
+| **二采专用模型** | 可选 `model_hires` 端口：一采（低分辨率）用 `model`、二采（高分辨率）另外挂一个 checkpoint/LoRA，起草与精修分开 |
+| **条件卡提示词只读/编辑** | 卡片提示词默认只读（跟随 `prompt_N` 端口）；点「编辑」后本次运行改用卡片里改过的文本，端口值不再覆盖 |
 | **内置语义桥** | 可选蒸馏 MLP，缓解复杂动作里的语义错乱（默认关闭） |
 | **面板内预览** | 草稿视频逐帧预览 + 逐段成片实时播放，不用等全部跑完 |
 | **连跑全部** | 一键切到上游 `run_mode=full_batch`，可随时停在当前段并从断点续跑 |
-| **逐段出片** | 每采样完一段立刻拼出一条 mp4，边跑边看 |
+| **逐段出片** | 每采样完一段立刻拼出一条 mp4（FFV1 无损时为 mkv），边跑边看 |
+| **逐段输入集合** | 把 32 组逐段端口（参考图包/提示词/时长/参考音频）收进一个独立节点，主节点不再被卡片撑长 |
 | **全局 LoRA / 全局种子** | 多片段批量出片时不用逐卡重复配置 |
-| **配套节点** | 参考图打包、成片导出、视频文件加载 |
-| **缓存一致性** | SelfLift 参数变化自动触发受影响片段重渲，不会吃到旧缓存 |
+| **配套节点** | 逐段输入集合、参考图打包、成片导出、视频文件加载 |
+| **缓存一致性** | SelfLift 参数变化（含换二采模型）自动触发受影响片段重渲，不会吃到旧缓存 |
 | **中文界面** | 控件/按钮/状态/提示全中文，淡紫主题 + 取色键换肤 |
 
 ---
@@ -106,6 +109,17 @@ latent 依然是 Extender 的 nested AV latent，音频流依然走复用 Euler 
 | `selflift_upscaler_model` | `none` | 外部学习型 H3 latent upscaler（`models/latent_upscale_models`）；选中后请把它当主提升路径，`rho` 设为 `0` |
 | `selflift_upscaler_unload` | `true` | 提升完立刻把 upscaler 卸出显存（不影响结果） |
 | `selflift_highres_tiling` | `false` | 高分辨率阶段空间自动分块（1–8 块），显存吃紧时开 |
+
+### 追加的输入端口（插座，不是控件）
+
+| 端口 | 类型 | 说明 |
+|---|---|---|
+| `selflift_sigmas` | `SIGMAS` | 外接调度表，见「外接 SIGMAS 调度」 |
+| `model_hires` | `MODEL` | **二采专用模型**，可选。不接 → 一采/二采都用 `model`；接上 → 一采（低分辨率，定空间动作轮廓）用 `model`，二采（高分辨率，补细节）用 `model_hires`。常用来给二采单独挂一份 LoRA 或一个精修 checkpoint。接上后各条件卡的 LoRA 与全局 LoRA **只作用于一采**，不会渗进二采；拔掉才恢复「两阶段都吃条件卡 LoRA」。必须与 `model` 同架构同 latent 格式（都是 H3 系列）。 |
+| `per_clip_inputs` | `H3_PER_CLIP_INPUTS` | **逐段输入集合**，可选。接「Yanhuo H3 逐段输入集合」节点（见下节）。不接 → 各条件卡用自己的卡片值（与以前不接 `prompt_N` / `ref_pack_N` 完全一样）。 |
+
+> 两个端口都放在 `optional` 里（未连线完全可用、老工作流零影响）。
+> 逐段端口之所以不再长在主节点上：32 张卡 × 4 个端口会把节点撑到看不见 `model/clip/vae`。
 
 ### 两套推荐起点
 
@@ -277,11 +291,13 @@ hybrid = h + alpha * (p - h)            # alpha 推荐 0.10~0.15
 
 ### 逐段出片
 
-开启连跑后，每采样完一个 CLIP N，立即把当前链路（第 1..N 段）拼接输出为一个 mp4
+开启连跑后，每采样完一个 CLIP N，立即把当前链路（第 1..N 段）拼接输出为一个视频
 （`output/yanhuo_selflift/<节点id>_clip_NN_of_TT.mp4`，重跑覆盖），然后继续后面的片段。
 
 - 零重复解码：只做 ffmpeg 流复制拼接（`-c:v copy`），每段额外开销秒级；
 - 导出规格自动沿用工作流里成片导出节点的 codec/crf/preset，与最终成片一致；
+- **容器跟随导出规格**：H.264 / HEVC 等写 `.mp4`；选了 **FFV1 无损**时改写成 `.mkv`
+  （上游 muxer 不给 `-f`，靠扩展名推断封装器，FFV1+FLAC 进不了 mp4）；
 - 仅 REF2VA 运动链模式生效（FL2VA / 独立片段模式自动跳过）；
 - 工具栏状态行会提示「已输出 N/总 段视频 → 文件名」；任何导出异常只记日志、绝不打断采样。
 
@@ -320,33 +336,37 @@ hybrid = h + alpha * (p - h)            # alpha 推荐 0.10~0.15
 ## 配套节点
 
 主节点采样完成后只吐 `cache`（链路缓存），成片要靠 Final Decode 导出；参考图也要先打包。
-这三个节点把这条链路补齐，全部复用姊妹包的重逻辑，本包只做**绑定与中文化**。都在
+这些节点把这条链路补齐，全部复用姊妹包的重逻辑，本包只做**绑定与中文化**。都在
 `MiniMax H3/SelfLift` 分类下。
 
 | 节点 | 显示名 | 输入 → 输出 | 作用 |
 | --- | --- | --- | --- |
-| `YanhuoH3RefPackFromImages` | Yanhuo 参考图打包 (图像列表→ref_pack) | `images (IMAGE)` → `ref_pack`、`参考数` | 把一批参考图按帧顺序折成一个 `H3_REF_PACK`，直接接主节点的 `ref_pack_N`，即成为 **CLIP N 专属**的 Picture 1..K 参考集。上限 9 张（与每卡上限一致），超出部分丢弃并打 WARNING。 |
+| `YanhuoH3PerClipInputs` | Yanhuo H3 逐段输入集合 | 32 组逐段端口 → `per_clip_inputs` | v1.12.0 新增。把原本长在主节点上的逐段端口（`ref_pack_N` / `prompt_N` / `duration_N` / `ref_audios_N`）集中到这个节点上接线，第 N 组只作用于第 N 张条件卡。前端只显示「片段数」那么多组（未接线的插座自动收起），**编号即寻址**：第 N 组永远对应第 N 张卡，不会因为前面空着就往前挤。接线数超过片段数时自动把片段数顶高，而不是删线。 |
+| `YanhuoH3RefPackFromImages` | Yanhuo 参考图打包 (图像列表→ref_pack) | `images (IMAGE)` → `ref_pack`、`参考数` | 把一批参考图按帧顺序折成一个 `H3_REF_PACK`，接「逐段输入集合」的 `ref_pack_N`（老工作流也可直连主节点同名端口），即成为 **CLIP N 专属**的 Picture 1..K 参考集。上限 9 张（与每卡上限一致），超出部分丢弃并打 WARNING。 |
 | `YanhuoH3FinalDecodeOutput` | Yanhuo 成片导出 (Final Decode) | `cache` + `vae` (+ 编码参数) → `成片视频 (VIDEO)` | 主节点跑完后的**视频输出端**：拼接、编码全部已渲染片段并给预览，输出 VIDEO 供下游（放大、插帧、转码、SaveVideo）继续用。端口名与 Extender 的 Final Decode 一字不改（只翻译提示），老工作流不会断。 |
 | `YanhuoH3VideoFileLoader` | Yanhuo 视频文件加载 (成片→VIDEO) | `video_path (STRING)` → `视频 (VIDEO)`、`文件路径` | 把链路已写出的成片/分段（mp4/mkv）重新装载为 VIDEO 喂给下游。支持绝对路径，或相对 ComfyUI `output` 目录的路径（如 `yanhuo/chain_00001_.mp4`）。找不到文件时在 Queue 前就报错。 |
 
 典型接法：
 
 ```
-[图像列表] ──> Yanhuo 参考图打包 ──ref_pack──> Yanhuo H3 Motion Context SelfLift (ref_pack_1)
-                                                        │ cache
-                                                        v
-                                          Yanhuo 成片导出 (Final Decode) ──成片视频──> SaveVideo / 视频放大
-                                                        │ （已写出的 mp4）
-                                                        v
-                                          Yanhuo 视频文件加载 ──视频──> 下游二次处理
+[图像列表] ──> Yanhuo 参考图打包 ──ref_pack_1──> Yanhuo H3 逐段输入集合 ──per_clip_inputs──> Yanhuo H3 Motion Context SelfLift
+                        （prompt_1 / duration_1 / ref_audios_1 也接在集合节点上）                  │ cache
+                                                                                                v
+                                                                              Yanhuo 成片导出 (Final Decode) ──成片视频──> SaveVideo / 视频放大
+                                                                                                │ （已写出的 mp4/mkv）
+                                                                                                v
+                                                                              Yanhuo 视频文件加载 ──视频──> 下游二次处理
 ```
 
-### 参考图端口：只保留逐片段的
+### 逐段端口搬家说明
 
-节点上只有与 CLIP N 同步的参考图端口（`ref_pack_N` / `prompt_N` / `ref_audio_N_x`），
-接哪个片段就只影响哪个片段。全局的 `ref_pack` / `prompt_pack` 两个端口已移除——
-它们和逐片段端口语义重叠，容易接错。**已保存的老工作流如果连过这两个全局端口，
-重新打开时那两条线会显示为空**，把线改接到 `ref_pack_N` 即可（行为等价，只是作用域变成片段级）。
+- v1.2.0 起移除全局 `ref_pack` / `prompt_pack`（与逐段端口语义重叠，容易接错）；
+- v1.12.0 起**逐段端口整体搬到「逐段输入集合」节点**，主节点只留一个 `per_clip_inputs`
+  聚合端口 —— 这是「卡片一多就把主节点撑到看不见 `model/clip/vae`」的解法；
+- **纯增量改动，老工作流不坏**：老工作流里已经连在主节点 `prompt_1` / `ref_pack_1` 上的线
+  仍然有效（插座名在工作流 JSON 里还留着，父类照旧收得到值），只是新工作流推荐接到集合节点。
+  想迁移，把线改接到集合节点的同名端口即可，行为完全一致；
+- 全局的 `ref_audio_1..3` / `ref_video_*` **不是**逐段端口，仍在主节点上，未受影响。
 
 ---
 
@@ -411,9 +431,11 @@ python tools/diagnose_chain.py <manifest.json>  # 或指定 manifest
    父节点自己写的字段，本包无法改，尽量避免用这个项目导入直接还原本节点。
 5. `comfyui-SelfLift` 对 MiniMax H3 的适配作者自己标注为**实验性**（论文未在视频模型上验证），
    段间抖动这类问题只能在真实素材上验。
-6. 三个配套节点里，**成片导出**依赖 Extender 的 `motion_context_disk` 模块。若该模块缺失，
+6. 四个配套节点里，**成片导出**依赖 Extender 的 `motion_context_disk` 模块。若该模块缺失，
    只有这一个节点不注册（日志会 WARNING 提示），改用 Extender 自带的 Final Decode 即可；
-   另外两个节点不依赖它，照常可用。
+   另外三个节点（逐段输入集合 / 参考图打包 / 视频文件加载）不依赖它，照常可用。
+7. **二采模型必须与 `model` 同架构、同 latent 格式**（都是 H3 系列）。接上 `model_hires` 后，
+   各条件卡的 LoRA 与全局 LoRA 只作用于一采；二采只走 `model_hires` 自己串的 LoRA 链。
 
 ---
 
@@ -423,11 +445,12 @@ python tools/diagnose_chain.py <manifest.json>  # 或指定 manifest
 yanhuo_H3_Motion-Context_SelfLift/
 ├─ __init__.py              节点注册 + WEB_DIRECTORY
 ├─ vendor.py                只读定位/复用两个姊妹包（共享同一份 module 实例）
-├─ config.py                SelfLiftSettings：解析、校验、缓存签名
+├─ config.py                SelfLiftSettings：解析、校验、缓存签名（含二采模型指纹）
 ├─ engine.py                采样接管（作用域置换 + finally 还原）与前置校验
 ├─ node.py                  节点：参数注入、缓存失效、调用父类 extend()
+├─ perclip_inputs.py        「逐段输入集合」节点：逐段端口的声明与 bundle 打包
 ├─ preview.py               草稿/成片预览的后端编码与推送
-├─ segment_export.py        逐段成片导出（ffmpeg 流复制拼接）
+├─ segment_export.py        逐段成片导出（ffmpeg 流复制拼接，容器跟随导出规格）
 ├─ semantic_bridge.py       内置语义桥（可选 MLP）
 ├─ tiling_fix.py            高分辨率分块的 Motion-Context 修正
 ├─ companion_nodes.py       配套节点：参考图打包 / 成片导出 / 视频文件加载
@@ -437,8 +460,10 @@ yanhuo_H3_Motion-Context_SelfLift/
 ├─ docs/
 │  ├─ diagrams.md           6 张工作原理图（Mermaid 源码 + SVG 索引）
 │  └─ images/               *.svg 原理图 + build_svg.py / check_svg.py
-├─ web/selflift_extender.js （生成物）原 Extender UI + 后处理，见 THIRD_PARTY_NOTICES.md
-└─ tests/                   9 个文件 / 158 项
+├─ web/
+│  ├─ selflift_extender.js  （生成物）原 Extender UI + 后处理，见 THIRD_PARTY_NOTICES.md
+│  └─ perclip_collector.js  「逐段输入集合」节点的动态端口（本仓库自有，MIT）
+└─ tests/                   12 个文件 / 256 项
 ```
 
 `web/selflift_extender.js` 是构建产物，**不要手改**；Extender 更新后重跑即可同步：
@@ -464,22 +489,28 @@ python tools/build_frontend.py
 ```bash
 python tests/test_selflift_bridge.py
 python tests/test_selflift_integration.py
+python tests/test_perclip_inputs.py
+python tests/test_model_hires.py
+python tests/test_prompt_edit.py
 python tests/test_tiling_fix.py
 python tests/test_external_sigmas.py
 python tests/test_companion_nodes.py
 ```
 
-共 9 个文件 **158 项**：
+共 12 个文件 **256 项**：
 
 | 文件 | 项数 | 覆盖 |
 | --- | --- | --- |
-| `test_selflift_bridge.py` | 34 | 参数解析/校验、缓存签名、采样接管的路由与还原（含异常路径）、签名失效/复用/失败兜底、控件顺序、`selflift_sigmas` 必须是输入端口、tooltip 中文化 |
+| `test_perclip_inputs.py` | 36 | 「逐段输入集合」节点：32 组端口声明与类型、bundle 打包/拆包、缺端口/坏类型兜底、主节点侧的新旧插座一并剥离、缓存签名只看主节点载荷 |
+| `test_selflift_bridge.py` | 34 | 参数解析/校验、缓存签名、采样接管的路由与还原（含异常路径）、签名失效/复用/失败兜底、控件顺序、`selflift_sigmas` 与 `model_hires` 必须是输入端口、逐段端口已搬离主节点、tooltip 中文化 |
 | `test_external_sigmas.py` | 31 | 调度表指纹的稳定性/内容敏感性、外部表全套前置校验、外部表绕过 `_sigmas` 直达采样、置换还原、disabled 时忽略外接 |
+| `test_model_hires.py` | 31 | 二采模型：`model_digest` 对权重/精度/LoRA 的内容敏感性、缓存签名只在接了才纳入、高低噪阶段分别用哪个模型、非 rectified-flow 模型被拒、端口存在但值为 None 的告警路径 |
+| `test_build_guard.py` | 25 | 构建产物不得残留 Python 语法、v1.12.0 端口透传层与动态插座护栏必须写进产物、`perclip_collector.js` 与单音频批次端口的形态守护 |
 | `test_companion_nodes.py` | 23 | 三个配套节点的注册/中文显示名与说明、参考图打包的槽位与 9 张上限、Final Decode 桥只改 tooltip 不动端口名、视频加载器的路径解析与中文报错 |
-| `test_semantic_bridge.py` | 14 | 语义桥的加载、维度推断、幅值对齐、混合公式、异常兜底 |
-| `test_segment_export.py` | 13 | 逐段出片的文件命名、ffmpeg 参数、跳过条件与异常兜底 |
+| `test_segment_export.py` | 17 | 逐段出片的文件命名、容器后缀跟随导出规格（FFV1→mkv）、ffmpeg 参数、跳过条件与异常兜底 |
 | `test_global_overrides.py` | 15 | 全局 LoRA/种子覆盖的全部分支、逐 clip 独立拷贝、强度钳制、坏 JSON 兜底 |
-| `test_build_guard.py` | 10 | 构建产物不得残留 Python 语法（`str(` / 未替换占位符 / `= None\|True\|False`） |
+| `test_semantic_bridge.py` | 14 | 语义桥的加载、维度推断、幅值对齐、混合公式、异常兜底 |
+| `test_prompt_edit.py` | 12 | 条件卡提示词「只读/编辑」：编辑态片段的 `prompt_N` 必须在进父类前摘掉、非编辑态不动、坏 JSON/缺字段兜底 |
 | `test_tiling_fix.py` | 10 | 先复现「关键帧 + 参考集共存时行数对不上」的原始 bug，再验证修正与整帧兜底 |
 | `test_selflift_integration.py` | 8 | 用真实姊妹包验证 `progressive_sample` 签名、真实 Extender latent、音频 Euler 步进、模块级置换/还原 |
 
@@ -503,6 +534,13 @@ python tests/test_companion_nodes.py
 
 | 版本 | 变化 |
 | --- | --- |
+| v1.13.1 | 修 FFV1 无损时逐段自动保存失效：逐段文件的容器后缀改为跟随导出规格（FFV1 → `.mkv`），与 Final Decode sidecar 用同一判定 |
+| v1.13.0 | 逐段音频端口 `ref_audio_N_1..3` 合并为批次端口 `ref_audios_N`（一段音频按顺序拆成该片段的参考音频）；主节点同步剥离新旧两批插座名，老工作流的连线不受影响 |
+| v1.12.1 | 修「逐段端口搬完」之后的四个线上问题：打开老工作流时清理未接线的空残留插座、提示词框未连接时恢复可编辑、编辑态标记改挂 runtime 抗 state 替换、静止状态不再把节点撑高 |
+| v1.12.0 | 新增**「Yanhuo H3 逐段输入集合」节点**：逐段端口（`ref_pack_N` / `prompt_N` / `duration_N` / `ref_audio*`）从主节点整体搬过去，主节点只留一个 `per_clip_inputs` 聚合端口；纯增量，老工作流的直连不受影响 |
+| v1.11.0 | 条件卡提示词支持「刷新 / 只读·编辑」：编辑态片段的 `prompt_N` 端口值不再覆盖卡片里改过的文本 |
+| v1.10.0 | 新增 `model_hires` 端口：二采（高分辨率/低噪阶段）可以另接一个 checkpoint/LoRA，一采仍用 `model`；模型内容指纹进缓存签名，换模型必重渲 |
+| v1.9.0 | **（本仓库不含此项）** 上游「自包含 / 内置 `_vendor/`」实验：只在本地自用版本里做，因为 `comfyui-SelfLift` 无 LICENSE、Extender 内含改编自 GPL-3.0 的代码，随包分发属合规风险。本仓库始终保持「只 import」形态 |
 | v1.8.1 | 面板高度改由 flexbox 分配，修复 v1.8.0 引入的「滑轨不显示」回归；修掉构建期把 Python 表达式写进 JS 的 bug；草稿/成片预览尺寸对齐 |
 | v1.7.0 | 逐段成片实时预览 + 底部滑轨恒定（裁差自动补偿） |
 | v1.6.1 | 底部滑轨安全余量，压缩到最小时滑轨不再被裁 |

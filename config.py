@@ -9,12 +9,18 @@ segments inside one continuation chain.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import logging
 import math
 from dataclasses import dataclass, replace
 
 _LOG = logging.getLogger("yanhuo_h3_selflift")
+
+# ``torch`` is optional here: the digest helpers degrade to "?" without it, and
+# cache invalidation then falls back to other signals instead of importing a
+# heavy dependency at module load.
+torch = None
 
 # Widget names exposed by the node. Everything is prefixed so the inherited
 # Extender widgets stay untouched.
@@ -40,7 +46,13 @@ WIDGET_NAMES = (
 
 # External input sockets (not widgets): declared in INPUT_TYPES so the frontend
 # renders a socket, peeled off the payload before the parent's extend() runs.
-INPUT_NAMES = ("selflift_sigmas",)
+# v1.10.0：model_hires 不接受 selflift_ 前缀——它要插在父节点的 model 端口正
+# 下方，名字必须一目了然，且不能落进 WIDGET_NAMES（那是值类型），也不参与
+# split_settings 的剥离（它在 extend_with_selflift 里单独取出）。
+INPUT_NAMES = ("selflift_sigmas", "model_hires")
+
+# 二采（高分辨率/低噪阶段）专用模型端口。
+MODEL_HIRES_INPUT = "model_hires"
 
 LATENT_UPSAMPLE_MODES = ("nearest", "bilinear")
 
@@ -86,6 +98,11 @@ class SelfLiftSettings:
     bridge_magnitude: str = "per_token"
     # Fingerprint of an externally supplied sigma schedule ("": use widgets).
     sigmas_digest: str = ""
+    # v1.10.0 二采专用模型：``hires_model_linked`` 为真时高分辨率阶段跑
+    # model_hires；``hires_model_digest`` 是该模型的内容指纹（""=取不到）。
+    # 两者都进缓存签名，避免换二采模型后继续吃老 segment。
+    hires_model_linked: bool = False
+    hires_model_digest: str = ""
 
     # -- construction -----------------------------------------------------
     @classmethod
@@ -201,6 +218,10 @@ class SelfLiftSettings:
     def uses_external_sigmas(self) -> bool:
         return bool(self.sigmas_digest)
 
+    def uses_second_stage_model(self) -> bool:
+        """True when the high-resolution stage runs on ``model_hires``."""
+        return bool(self.hires_model_linked)
+
     def direct_lift_label(self) -> str:
         if not (self.rho >= 1.0 and self.w_min >= 1.0 and self.w_max >= 1.0):
             return "learned-upscaler" if self.uses_learned_lifter() else self.latent_upsample
@@ -215,6 +236,7 @@ class SelfLiftSettings:
             f"w=({self.w_min:.2f},{self.w_max:.2f}) lift={self.direct_lift_label()} "
             f"pixel_anchor={self.uses_pixel_anchor()} tiling={self.highres_tiling}"
             + (" sigmas=external" if self.uses_external_sigmas() else "")
+            + (" hires=custom" if self.uses_second_stage_model() else "")
         )
 
     def signature(self) -> str:
@@ -233,6 +255,10 @@ class SelfLiftSettings:
             # chain would leave the whole cache looking "unchanged".
             "sigmas": self.sigmas_digest,
         }
+        # v1.10.0：只在真的接了 model_hires 时才进签名——没接的用户升级后不会
+        # 白白重渲一次；接上/换掉/拔掉都必然重渲（结果确实会变）。
+        if self.hires_model_linked:
+            payload["hires_model"] = self.hires_model_digest
         # v1.6.0：语义桥只在开启时进签名——没开的用户不会因为升级而白白重渲一次，
         # 开了以后改模型/强度/对齐方式则必定重渲（结果确实会变）。
         bridge = self.bridge_signature()
@@ -272,12 +298,131 @@ def sigmas_digest(sigmas) -> str:
     return f"{int(tensor.numel())}:{digest}"
 
 
+def model_digest(model, samples: int = 24) -> str:
+    """内容指纹：换了权重的 MODEL 必须给出不同的串（"" = 读不出来）。
+
+    ``ModelPatcher`` 没有任何可序列化的身份：既不像 sigma 那样是个张量，
+    也不能指望对象地址稳定（ComfyUI 重启一次就全换）。所以这里直接哈希"决定
+    出片的东西"——参数的名/形状/精度、`samples` 个散布在权重里的**采样值**、
+    以及每一层 patch（LoRA）：名字、strength、以及 patch 张量本身的采样值。
+
+    采样值是关键：两个同为 H3 架构但权重不同的 checkpoint，形状精度完全一样，
+    只有真实数值能区分。取 4 个值用 ``index_select`` 后搬到 CPU，拷贝量是常数，
+    对 30GB 的模型也一样便宜（每次执行算一次）。
+    """
+    if model is None:
+        return ""
+    digest = hashlib.sha256()
+    hits = 0
+
+    try:
+        params = list(model.model.named_parameters())
+    except Exception:
+        params = []
+    digest.update(f"params={len(params)}".encode("utf-8"))
+    if params:
+        step = max(1, len(params) // max(1, samples))
+        for name, tensor in params[::step][: max(1, samples)]:
+            digest.update(f"|p:{name}:{tuple(tensor.shape)}:{tensor.dtype}".encode("utf-8", "replace"))
+            values = _sampled_values(tensor)
+            hits += 0 if values == "?" else 1
+            digest.update((">" + values).encode("utf-8", "replace"))
+
+    for key, entries in _sorted_items(getattr(model, "patches", None) or {}):
+        digest.update(f"|lora:{key}".encode("utf-8", "replace"))
+        for entry in list(entries or [])[:8]:
+            summary = _patch_summary(entry)
+            hits += 0 if summary in ("", "?", "-") else 1
+            digest.update((">" + summary).encode("utf-8", "replace"))
+
+    objects = _sorted_items(getattr(model, "object_patches", None) or {})
+    if objects:
+        digest.update(
+            ("|obj:" + ",".join(key for key, _v in objects)).encode("utf-8", "replace")
+        )
+        hits += 1
+
+    if hits == 0:
+        # 一个像样的值都没取到（自定义包装 / 权重在 meta 上 / 非 ComfyUI 模型）。
+        # 宁可让调用方走别的兜底，也不要给两个不同模型算出同一串。
+        return ""
+    return digest.hexdigest()[:16]
+
+
+def _is_tensor(value) -> bool:
+    return hasattr(value, "detach") and hasattr(value, "shape")
+
+
+def _sorted_items(mapping):
+    try:
+        return sorted(mapping.items(), key=lambda kv: str(kv[0]))
+    except Exception:
+        return []
+
+
+def _sampled_values(tensor, count: int = 4) -> str:
+    """Spread ``count`` values across a weight without ever copying it."""
+    global torch
+    if torch is None:
+        try:
+            torch = importlib.import_module("torch")
+        except Exception:
+            return "?"
+    try:
+        flat = tensor.detach().reshape(-1)
+        total = int(flat.numel())
+        if total <= 0:
+            return "-"
+        picks = torch.linspace(0, total - 1, min(count, total)).to(torch.int64).to(flat.device)
+        values = flat.index_select(0, picks).to(device="cpu", dtype=torch.float64)
+        return ".".join(f"{value:.8e}" for value in values.tolist())
+    except Exception:
+        return "?"
+
+
+def _walk(value, depth: int = 0):
+    """Yield every tensor / scalar inside a nested patch container."""
+    if _is_tensor(value):
+        yield value
+        return
+    if depth > 3:
+        return
+    if isinstance(value, dict):
+        children = value.values()
+    elif isinstance(value, (list, tuple)):
+        children = value
+    else:
+        yield value
+        return
+    for child in children:
+        for found in _walk(child, depth + 1):
+            yield found
+
+
+def _patch_summary(entry) -> str:
+    parts = []
+    for item in _walk(entry):
+        if _is_tensor(item):
+            parts.append(_sampled_values(item))
+        elif isinstance(item, float):
+            parts.append(f"{item:.10g}")
+        elif isinstance(item, int):
+            parts.append(str(item))
+        elif item is None:
+            parts.append("-")
+        else:
+            parts.append(str(item)[:48])
+    return ";".join(parts)
+
+
 __all__ = [
     "INPUT_NAMES",
     "LATENT_UPSAMPLE_MODES",
+    "MODEL_HIRES_INPUT",
     "PREFIX",
     "UPGRADER_KEY",
     "WIDGET_NAMES",
     "SelfLiftSettings",
+    "model_digest",
     "sigmas_digest",
 ]

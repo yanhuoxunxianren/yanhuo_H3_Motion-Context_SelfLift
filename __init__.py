@@ -7,12 +7,14 @@ progressive-resolution sampler instead of a single full-resolution pass.
     (latent upsample / learned H3 latent upscaler vs pixel-VAE re-encode)
     -> artifact-aware consistency lift -> re-noise -> high-res Euler suffix
 
-Both source plugins stay untouched: the Extender supplies the UI, the clip
-pipeline and the Motion Context cache; comfyui-SelfLift supplies the sampling
-engine. This package only binds them together.
+Both source plugins stay untouched and are **not** redistributed here: the
+Extender supplies the UI, the clip pipeline and the Motion Context cache;
+comfyui-SelfLift supplies the sampling engine. This package only imports them
+read-only and binds them together, so both must be installed side by side in
+``custom_nodes/``.
 """
 
-__version__ = "1.8.1"
+__version__ = "1.13.1"
 
 import logging
 

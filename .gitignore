@@ -1,5 +1,20 @@
 __pycache__/
 *.py[cod]
+
+# --- 合规护栏（不要删除）-------------------------------------------------
+# 本仓库以「只 import、不内置、不再分发」的方式使用两个姊妹包，见
+# THIRD_PARTY_NOTICES.md。下面这些规则防止误把上游源码提交进本仓库：
+#   _vendor/                 本地自包含实验用的上游整包副本（含无许可的
+#                            comfyui-SelfLift 与改编自 GPL-3.0 的代码）
+#   web/extender.js 等 4 个  上游 Extender 的 JS 原件；本仓库只提交由
+#                            tools/build_frontend.py 生成的那一个产物
+_vendor/
+web/extender.js
+web/live_preview.js
+web/prompt_bridge.js
+web/reference_bridge.js
+# -------------------------------------------------------------------------
+
 *.egg-info/
 .eggs/
 build/

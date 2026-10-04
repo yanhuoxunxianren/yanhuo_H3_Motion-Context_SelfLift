@@ -39,7 +39,7 @@ if "yanhuo_selflift" not in sys.modules:
 
 PKG = sys.modules["yanhuo_selflift"]
 
-from yanhuo_selflift import config, engine, node, vendor  # noqa: E402
+from yanhuo_selflift import config, engine, node, perclip_inputs, vendor  # noqa: E402
 
 try:
     import torch
@@ -501,17 +501,27 @@ class InvalidationTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class RegistrationTests(unittest.TestCase):
     def test_node_is_registered_with_extension(self):
-        expected = (
-            [
-                "YanhuoH3FinalDecodeOutput",
-                "YanhuoH3MotionContextSelfLift",
-                "YanhuoH3RefPackFromImages",
-                "YanhuoH3VideoFileLoader",
-            ]
-            if node._BASE_EXTENDER is not None
-            else []
-        )
-        self.assertEqual(sorted(PKG.NODE_CLASS_MAPPINGS), expected)
+        # v1.9.0：注册集合不再是"恰好这 4 个" —— 上游两个包不在 custom_nodes 里时，
+        # 本包会用内置副本把 10 个上游原生节点一起补齐（否则旧工作流会变红）。
+        # 所以这里只断言"本包的这几个必须在"，不再断言"不能多"。
+        # v1.12.0：多了一个「逐段输入集合」节点（主节点的逐段端口搬过去了）。
+        own = [
+            "YanhuoH3FinalDecodeOutput",
+            "YanhuoH3MotionContextSelfLift",
+            "YanhuoH3PerClipInputs",
+            "YanhuoH3RefPackFromImages",
+            "YanhuoH3VideoFileLoader",
+        ]
+        if node._BASE_EXTENDER is None:
+            self.assertEqual(sorted(PKG.NODE_CLASS_MAPPINGS), [])
+            return
+        registered = PKG.NODE_CLASS_MAPPINGS
+        for name in own:
+            self.assertIn(name, registered, f"本包节点 {name} 未注册")
+        # 多出来的必须是上游名字（用内置副本补齐的），不能是凭空冒出来的。
+        extra = set(registered) - set(own)
+        for name in extra:
+            self.assertNotIn("yanhuo", name.lower(), f"意外的非上游节点: {name}")
 
     def test_companion_nodes_have_chinese_display_names(self):
         names = PKG.NODE_DISPLAY_NAME_MAPPINGS
@@ -529,24 +539,56 @@ class RegistrationTests(unittest.TestCase):
         for name in parent["required"]:
             self.assertIn(name, own["required"], name)
         for name in parent.get("optional", {}):
-            if name in node._REMOVED_GLOBAL_INPUTS:
-                # v1.2.0: 全局 ref_pack / prompt_pack 被有意移除，
-                # 只保留与 CLIP N 同步的 ref_pack_N / prompt_N / ref_audio_N_x。
+            if name in node._REMOVED_INPUTS:
+                # v1.2.0: 全局 ref_pack / prompt_pack 被有意移除。
+                # v1.12.0: 逐段端口 ref_pack_N / prompt_N / duration_N /
+                #          ref_audio_N_k 整体搬到「Yanhuo H3 逐段输入集合」节点，
+                #          主节点只留一个 per_clip_inputs 聚合端口。
                 self.assertNotIn(name, own.get("optional", {}), name)
                 continue
             self.assertIn(name, own.get("optional", {}), name)
         added = [n for n in own["required"] if n.startswith("selflift_")]
-        self.assertEqual(sorted(added), sorted(config.WIDGET_NAMES + config.INPUT_NAMES))
+        # v1.10.0：model_hires 故意不带 selflift_ 前缀（它是跟在 model 端口下面的
+        # 人类可读名字），所以这里只比对带前缀的那批。
+        expected = [
+            name
+            for name in config.WIDGET_NAMES + config.INPUT_NAMES
+            if name.startswith("selflift_")
+        ]
+        self.assertEqual(sorted(added), sorted(expected))
 
-    def test_per_clip_ref_ports_survive_the_global_removal(self):
+    def test_per_clip_ports_moved_to_the_collector_node(self):
+        """v1.12.0：逐段端口不在主节点上了，改由集合节点声明。
+
+        主节点只剩 per_clip_inputs 一个聚合端口——这是"CLIP N 卡片一多主节点
+        就被撑到看不见 model/clip/vae"的解法。
+        """
         if node._BASE_EXTENDER is None:  # pragma: no cover
             self.skipTest("sibling Extender unavailable")
         cls = PKG.NODE_CLASS_MAPPINGS["YanhuoH3MotionContextSelfLift"]
         optional = cls.INPUT_TYPES().get("optional", {})
         for name in ("ref_pack_1", "prompt_1", "duration_1", "ref_audio_1_0"):
-            self.assertIn(name, optional, name)
+            self.assertNotIn(name, optional, name)
         for name in node._REMOVED_GLOBAL_INPUTS:
             self.assertNotIn(name, optional, name)
+        # 全局的 ref_audio_1..3 / ref_video_* 不受影响（它们不是逐段端口）。
+        for name in ("ref_audio_1", "ref_audio_2", "ref_video_1"):
+            self.assertIn(name, optional, name)
+        # 聚合端口必须存在。
+        self.assertIn(perclip_inputs.PER_CLIP_BUNDLE_INPUT, optional)
+
+        # 集合节点要把这一整批端口原样接过来，一个都不能少。
+        collector = PKG.NODE_CLASS_MAPPINGS["YanhuoH3PerClipInputs"]
+        collector_ports = collector.INPUT_TYPES().get("optional", {})
+        expected = perclip_inputs.per_clip_port_names()
+        self.assertEqual(list(collector_ports), list(expected))
+        # 类型也要对：ref_pack_N 是 H3_REF_PACK，prompt_N 是 STRING…
+        self.assertEqual(collector_ports["ref_pack_1"][0], "H3_REF_PACK")
+        self.assertEqual(collector_ports["prompt_1"][0], "STRING")
+        self.assertEqual(collector_ports["duration_1"][0], "FLOAT")
+        # v1.13.0：音频合并成 ref_audios_N（一段音频批次），不再是 3 个级联。
+        self.assertEqual(collector_ports["ref_audios_1"][0], "AUDIO")
+        self.assertNotIn("ref_audio_1_0", collector_ports)
 
     def test_inherited_tooltips_are_chinese(self):
         if node._BASE_EXTENDER is None:  # pragma: no cover
@@ -554,8 +596,17 @@ class RegistrationTests(unittest.TestCase):
         cls = PKG.NODE_CLASS_MAPPINGS["YanhuoH3MotionContextSelfLift"]
         optional = cls.INPUT_TYPES().get("optional", {})
         # 抽样检查：这些端口的 tooltip 必须已经是中文（含 CJK 字符）。
-        for name in ("ref_pack_1", "prompt_1", "duration_1", "ref_audio_1_0", "ref_audio_1"):
+        # v1.12.0：ref_pack_N / prompt_N 已经搬走，改成抽剩下的全局端口 +
+        # 新增的聚合端口。
+        for name in ("ref_audio_1", "ref_video_1", "ref_video_fps_1", "model_hires",
+                     perclip_inputs.PER_CLIP_BUNDLE_INPUT):
             tooltip = optional.get(name, (None, {}))[1].get("tooltip", "")
+            self.assertTrue(any("一" <= ch <= "鿿" for ch in tooltip), f"{name}: {tooltip!r}")
+        # 集合节点那 128 个端口的 tooltip 也得是中文。
+        collector = PKG.NODE_CLASS_MAPPINGS["YanhuoH3PerClipInputs"]
+        ports = collector.INPUT_TYPES().get("optional", {})
+        for name in ("ref_pack_1", "prompt_1", "duration_1", "ref_audios_1"):
+            tooltip = ports[name][1].get("tooltip", "")
             self.assertTrue(any("一" <= ch <= "鿿" for ch in tooltip), f"{name}: {tooltip!r}")
 
     def test_sigmas_input_is_an_input_socket_not_a_widget(self):

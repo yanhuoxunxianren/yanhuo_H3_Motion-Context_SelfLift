@@ -10,7 +10,7 @@
   （``cache_full_batch_ref2va_segment``：中性 H264 检查点 + 最终规格 sidecar + PCM 音轨），
   这里在其返回后调用上游成片导出用的同一个拼接函数
   ``_export_final_from_exact_segment_caches``（视频 ``-c:v copy`` 流复制 + PCM 音轨 mux），
-  把第 1..N 段拼成一个 mp4 写到 ``output/yanhuo_selflift/``。
+  把第 1..N 段拼成一个 mp4（FFV1 无损时是 mkv）写到 ``output/yanhuo_selflift/``。
 * 额外成本 = 每段一次纯流复制 mux（秒级），没有任何二次 VAE 解码。
 * 导出规格（codec/crf/preset）沿用本次运行固定的 full_batch 导出规格——它来自
   工作流里成片导出（Final Decode）节点的控件，逐段文件与最终成片规格天然一致。
@@ -111,14 +111,30 @@ def default_audio_bitrate() -> str:
     return "192k"
 
 
-def output_video_path(node_id, prefix, total) -> Path:
-    """逐段文件：output/yanhuo_selflift/<节点id>_clip_NN_of_TT.mp4（重跑覆盖）。"""
+def output_extension(export_profile=None) -> str:
+    """逐段文件的容器后缀 —— 必须跟随导出规格，否则 mux 一定失败。
+
+    v1.13.1：上游 ``_mux_final`` 不显式给 ``-f``，靠输出扩展名推断封装器。
+    FFV1 无损是「视频 ffv1 + 音轨 flac」，只能进 Matroska；写死 .mp4 会被 mp4
+    封装器直接拒绝。这里改成与上游 sidecar 用同一个判定，保证逐段文件与
+    Final Decode 成片的容器一致。
+    """
+    try:
+        return _disk_module()._full_batch_export_profile_extension(export_profile)
+    except Exception:  # pragma: no cover - 上游缺失时按 H.264 语义兜底
+        codec = str((export_profile or {}).get("codec") or "") if isinstance(export_profile, dict) else ""
+        return "mkv" if codec == "FFV1 lossless" else "mp4"
+
+
+def output_video_path(node_id, prefix, total, export_profile=None) -> Path:
+    """逐段文件：output/yanhuo_selflift/<节点id>_clip_NN_of_TT.<mp4|mkv>（重跑覆盖）。"""
     import folder_paths
 
     out_dir = Path(folder_paths.get_output_directory()) / _OUTPUT_SUBDIR
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = re.sub(r"[^0-9A-Za-z_-]+", "_", str(node_id or "chain")).strip("_") or "chain"
-    return out_dir / f"{tag}_clip_{int(prefix):02d}_of_{int(total):02d}.mp4"
+    ext = output_extension(export_profile)
+    return out_dir / f"{tag}_clip_{int(prefix):02d}_of_{int(total):02d}.{ext}"
 
 
 def _export_prefix_video(
@@ -176,11 +192,16 @@ def _export_prefix_video(
         del decoded  # 立刻释放可能存在的整段 RGB 张量
         sidecars.append(sidecar)
 
-    output_path = output_video_path(node_id, prefix, total)
+    output_path = output_video_path(node_id, prefix, total, profile)
     try:
         output_path.unlink(missing_ok=True)  # 重跑覆盖；防播放器占用导致的覆盖失败
     except OSError:
         pass
+    if output_path.suffix.lower() == ".mkv":  # FFV1 无损
+        _LOG.info(
+            "[Yanhuo SelfLift] 逐段出片：本次为 FFV1 无损，逐段文件用 .mkv 容器"
+            "（浏览器内预览条放不了 MKV，文件本身正常，用本地播放器看）。"
+        )
 
     token = f"yanhuo_seg_{prefix:02d}_{uuid.uuid4().hex[:8]}"
     mcd._export_final_from_exact_segment_caches(
@@ -249,6 +270,7 @@ __all__ = [
     "FINAL_CLIP_EVENT",
     "install",
     "notify_final_clip",
+    "output_extension",
     "output_video_path",
     "owner_node_id",
     "supported_sequence_mode",
