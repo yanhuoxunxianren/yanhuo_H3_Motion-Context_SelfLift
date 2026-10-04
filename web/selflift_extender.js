@@ -3551,6 +3551,16 @@ function nodeIs(node, className) {
     return node?.comfyClass === className || node?.type === className;
 }
 
+// Final Decode 既可能是上游原版节点，也可能是 Yanhuo 中文桥（Yanhuo 成片导出）。
+const FINAL_DECODE_TARGETS = [
+    FINAL_TARGET,
+    "YanhuoH3FinalDecodeOutput",
+];
+
+function isFinalDecodeNode(node) {
+    return FINAL_DECODE_TARGETS.some((className) => nodeIs(node, className));
+}
+
 function connectedFinalDecode(node) {
     const graph = node?.graph || app.graph;
     if (!graph) return null;
@@ -3560,7 +3570,7 @@ function connectedFinalDecode(node) {
         if (!link) continue;
         const target = graph.getNodeById?.(link.target_id)
             || (graph._nodes || []).find((n) => String(n?.id) === String(link.target_id));
-        if (target && nodeIs(target, FINAL_TARGET)) return target;
+        if (target && isFinalDecodeNode(target)) return target;
     }
     return null;
 }
