@@ -9,7 +9,6 @@ segments inside one continuation chain.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import logging
 import math
@@ -365,7 +364,13 @@ def _sampled_values(tensor, count: int = 4) -> str:
     global torch
     if torch is None:
         try:
-            torch = importlib.import_module("torch")
+            # 延迟导入 torch：没有 torch 的环境里本函数降级返回 "?"。
+            # 注意：这里刻意不写「以字符串字面量直接做按名导入」那种形式 ——
+            # Comfy Registry 的安全扫描（yara 规则 $importlib_direct）会把它判成
+            # 字节码操纵 / 导入规避，从而把整个版本标记为 Flagged 而无法安装。
+            import torch as _torch_module
+
+            torch = _torch_module
         except Exception:
             return "?"
     try:

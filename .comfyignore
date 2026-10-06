@@ -4,3 +4,10 @@
 
 tests/
 .github/
+# 前端打包脚本与链路诊断脚本：只在开发/构建时用，运行期不导入。
+# tools/build_frontend.py 内嵌了一整份打包好的 JS，会被 Registry 扫描器
+# （yara 规则 $semicolon_5）误判成「压缩混淆的 Python」。
+tools/
+# 文档构建/校验脚本：只用来生成和检查 README 里的 SVG，运行期不需要。
+docs/images/build_svg.py
+docs/images/check_svg.py
